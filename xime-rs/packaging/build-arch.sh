@@ -29,12 +29,21 @@ else
 fi
 OUT="$OUTDIR/xime-$VERSION-1-$ARCH.pkg.tar.$EXT"
 
-mkdir -p "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" "$OUTDIR"
+mkdir -p "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" \
+         "$STAGE/usr/share/applications" "$STAGE/etc/xdg/autostart" \
+         "$STAGE/usr/lib/systemd/user" "$OUTDIR"
 
 install -m 755 "$BIN" "$STAGE/usr/bin/xime"
 install -m 755 packaging/xime-setup "$STAGE/usr/bin/xime-setup"
+install -m 755 packaging/xime-switch "$STAGE/usr/bin/xime-switch"
 install -m 644 README.md "$STAGE/usr/share/doc/xime/README.md"
 install -m 644 packaging/copyright "$STAGE/usr/share/doc/xime/copyright"
+# KDE「系统设置 → 键盘 → 虚拟键盘」靠这个条目发现 xime
+install -m 644 packaging/xime.desktop "$STAGE/usr/share/applications/xime.desktop"
+# fcitx5 式的开机自启（NotShowIn 挡掉了 KDE/GNOME；xime 内置单实例锁，重复拉起无害）
+install -m 644 packaging/xime-autostart.desktop "$STAGE/etc/xdg/autostart/xime.desktop"
+# 与 fcitx5 同款生命周期管理（Omarchy 上 fcitx5 就是 systemd 用户单元）
+install -m 644 packaging/xime.service "$STAGE/usr/lib/systemd/user/xime.service"
 install -m 644 packaging/xime.install "$STAGE/.INSTALL"
 
 SIZE=$(du -sk "$STAGE/usr" | cut -f1)
@@ -57,12 +66,12 @@ EOF
 # .MTREE：pacman 安装时核对文件清单与校验和（不含 .MTREE 自身）。
 # makepkg 生成的是 gzip 压缩流，libalpm 也按 gzip 读取，保持一致。
 ( cd "$STAGE" && bsdtar --format=mtree --options='!all,md5,sha256,cksum' \
-      -cf - .PKGINFO .INSTALL usr ) | gzip -n > "$STAGE/.MTREE"
+      -cf - .PKGINFO .INSTALL usr etc ) | gzip -n > "$STAGE/.MTREE"
 
 # 组包：元数据在包根部，数据目录归 root，一次 tar 流过去压缩
 if [ "$EXT" = zst ]; then
     ( cd "$STAGE" && tar --owner=0 --group=0 --numeric-owner -cf - \
-          .MTREE .PKGINFO .INSTALL usr ) | zstd -q -f -o "$OUT" -T0 --no-progress
+          .MTREE .PKGINFO .INSTALL usr etc ) | zstd -q -f -o "$OUT" -T0 --no-progress
 else
     ( cd "$STAGE" && tar --owner=0 --group=0 --numeric-owner -cf - \
           .MTREE .PKGINFO .INSTALL usr ) | gzip -n > "$OUT"

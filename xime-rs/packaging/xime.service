@@ -1,0 +1,22 @@
+[Unit]
+Description=xime Wayland input method (zwp_input_method_v2)
+# 和 fcitx5 一样的接法：等合成器起来（WAYLAND_DISPLAY 由 uwsm/会话导入用户
+# 管理器之后 graphical-session.target 才算 active），合成器退场时跟着退。
+After=graphical-session.target
+PartOf=graphical-session.target
+# After= 只是排序，拦不住会话外被拉起（比如 SSH 里跑 omarchy update 时用户
+# 管理器是活的）；没有 WAYLAND_DISPLAY 起来的 xime 连不上合成器，还会把
+# graphical-session.target 之后的正式启动挡住——所以直接跳过本次启动。
+ConditionEnvironment=WAYLAND_DISPLAY
+ConditionPathExists=/usr/bin/xime
+
+[Service]
+ExecStart=/usr/bin/xime
+# 合成器重启会杀掉 Wayland 连接；always（而不是 on-failure）保证它跟着
+# graphical-session.target 回来。进程崩溃同理。
+Restart=always
+RestartSec=2
+# 单实例锁（xime 内置 flock）会让重复拉起安静地退出 0，不会触发重启循环
+
+[Install]
+WantedBy=graphical-session.target

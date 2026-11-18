@@ -217,7 +217,7 @@ exact_into: lower_bound(p) → 长度 != len(p) 就返回
 
 ```
 $ cargo test --release
-running 40 tests ... test result: ok. 40 passed; 0 failed
+running 46 tests ... test result: ok. 46 passed; 0 failed
 ```
 
 覆盖：常用词、整句解码、简拼、尾部补全、多音字（银行/重庆）、ü 写作 v、
@@ -225,7 +225,9 @@ running 40 tests ... test result: ok. 40 passed; 0 failed
 简繁（简体不混繁体、繁体按词转换、切换即时重算）；
 英文（前缀补全按词频排序、大小写形态、候选上限、原样可上屏）；
 候选窗（三种形态尺寸、列数约束、英文态配色与尺寸不变）；
-按键判定（`Ctrl+Shift+F`、Shift keycode、字母大小写保真）。
+按键判定（`Ctrl+Shift+F`、Shift keycode、字母大小写保真）；
+连接接管（`WAYLAND_SOCKET` 的 fd 校验、`FD_CLOEXEC` 与非阻塞补齐）；
+单实例锁（flock 二次加锁被拒、fd 关闭后锁释放、目录不可写时降级可用）。
 
 **协议级端到端测试**用的是 C 版那套假合成器（`../wayland-ime/test/mock_compositor.c`，
 用 libwayland-server 实现 compositor/shm/seat/input-method/virtual-keyboard）。
@@ -237,6 +239,7 @@ running 40 tests ... test result: ok. 40 passed; 0 failed
 | `XIME_ARGS` | 传给它的参数，例如 `--en` |
 | `MOCK_KEYS` | 按键序列：小写字母＝该键，大写＝Shift+该键，另有 `space`/`enter`/`esc`/`backspace`/`shift` |
 | `MOCK_EXPECT` | 期望的 `commit_string`，默认「你好」 |
+| `MOCK_INHERIT` | 设为 1 时不用命名 socket，改用 socketpair + `WAYLAND_SOCKET` 传 fd，复现 KWin 拉起输入法的方式 |
 
 默认场景（中文）：
 
@@ -269,6 +272,16 @@ $ MOCK_KEYS="shift hel space" MOCK_EXPECT="help" ... # 单按 Shift 切英文
 最后一条同时验证了 Shift 的延迟切换：`Hel` 那次 Shift 一直按着，所以没有触发中英切换，
 否则打出来的会是中文候选而不是 `Help`。
 
+KDE 那条「由合成器拉起」的路径单独跑一遍——合成器不给命名 socket，而是把一条已连接的
+fd 通过 `WAYLAND_SOCKET` 塞过来，xime 必须直接接管它：
+
+```
+$ MOCK_INHERIT=1 XIME_CLIENT=./xime ../wayland-ime/build/mock_compositor
+模式：MOCK_INHERIT（WAYLAND_SOCKET 传递连接）
+ok   候选窗 surface 已创建 / 键盘 grab 已建立 / 空格选中首选并提交 "你好"
+全部通过
+```
+
 **渲染一致性**：`--render-test` 产出的候选条与 C 版**逐字节相同**
 （`cmp` 无差异），说明软光栅、字形取样、混合、圆角与布局完全对齐。
 
@@ -295,16 +308,90 @@ sudo apt install ./dist/xime_0.3.0_amd64.deb
 # Arch 系（Arch/CachyOS/Omarchy 等）：
 sudo pacman -U dist/xime-0.3.0-1-x86_64.pkg.tar.zst
 
-# 两种包文件布局一致、零依赖；安装/卸载钩子等价（写 /etc/xdg/kwinrc 默认值，
-# sudo 安装时给当前用户接上 sway/Hyprland/labwc 启动项）。
-# KDE 重新登录生效；sway/Hyprland 重载配置生效
+# 两种包文件布局一致、零依赖；安装/卸载钩子等价。包里带了三样接线材料：
+#   /usr/share/applications/xime.desktop   KDE 系统设置里的「虚拟键盘」条目
+#   /etc/xdg/autostart/xime.desktop        fcitx5 式开机自启（KDE/GNOME 除外）
+#   /usr/lib/systemd/user/xime.service     与 fcitx5 同款生命周期（Omarchy 上 fcitx5 就是这么跑的）
+# 安装钩子自动执行 xime-setup --auto：KDE 写 kwinrc；有 systemd 用户会话就
+# enable xime.service 并停用 omarchy-fcitx5.service；都没有才写会话启动项。
 xime-setup --status
 ```
+
+### 让桌面「选到」xime
+
+Wayland 没有输入法注册表，所以不存在一个跨桌面通用的「输入法列表」。能不能选，
+取决于合成器怎么管理输入法：
+
+| 桌面 | 系统设置里能选吗 | xime 怎么被拉起 |
+|---|---|---|
+| KDE Plasma (KWin) | 能：**系统设置 → 键盘 → 虚拟键盘** | 包内桌面条目（`X-KDE-Wayland-VirtualKeyboard=true`）+ kwinrc 的 `[Wayland] InputMethod` |
+| Hyprland / sway / labwc | 没有这个概念 | 写进会话启动项；谁绑上 `zwp_input_method_v2` 席位谁是输入法 |
+| GNOME (Mutter) | 有列表，但只列 IBus 引擎 | 用不了：Mutter 没实现该协议 |
+
+KDE 的列表是**按桌面条目发现**的：`/usr/share/applications` 下带
+`X-KDE-Wayland-VirtualKeyboard=true` 的条目才会出现（fcitx5、plasma-keyboard 都靠这一行
+被发现）。选中之后 KWin 把条目路径写进 `~/.config/kwinrc`：
+
+```ini
+[Wayland]
+InputMethod=/usr/share/applications/xime.desktop
+VirtualKeyboardMode=2
+```
+
+两个值都有讲究：
+
+- `InputMethod` 直接写可执行文件路径（`/usr/bin/xime`）也能跑起来，但**列表里不会显示为已选中**，
+  因为列表只认桌面条目。这就是「装好了却选不到」的典型原因。
+- `VirtualKeyboardMode=0` 表示禁用，KWin 根本不会拉起输入法。`xime-setup` 只在它缺失或为 0 时
+  改成 2（触摸/数位板/鼠标都启用），其余值一概不动。
+
+还有更隐蔽的一层：KDE 不让输入法自己去连 socket，而是**由 KWin 拉起进程，把一条已经连好的
+fd 通过 `WAYLAND_SOCKET` 交过去**，只有这条连接才被允许绑定 `zwp_input_method_v2`。自己按
+`WAYLAND_DISPLAY` 另开一条，拿到的是普通客户端身份，绑定时会被合成器拒掉。xime 启动时先看
+`WAYLAND_SOCKET`，有就接管，没有才自己连；`xime --check` 第一行会写明当前是哪一种。
+
+```sh
+xime-setup --status              # 会话类型 / 桌面条目 / kwinrc 当前值 + 协议自检
+sudo xime-setup --kde-default    # 只写 KDE 那部分（装包时已自动执行）
+sudo xime-setup --auto           # 按当前桌面自动接线：KDE 写 kwinrc，wlroots 写启动项
+```
+
+### 与 fcitx5 共存与切换（xime-switch）
+
+xime 和 fcitx5 是对等的输入法，可以随时互相切换，两边都装也没关系——xime 内置
+会话级单实例锁（`$XDG_RUNTIME_DIR/xime.lock` 上的 flock）：systemd、KWin、XDG
+autostart、手工启动不管哪条路把第二个实例拉起来，后来者都会安静退出（退出码 0，
+不会把 systemd 的 `Restart=always` 逼进重启循环）。没有明确拒绝语义的合成器上
+（Hyprland 就是静默换人），两个输入法同时跑的表现是「候选窗时有时无」，这把锁
+把整类问题挡掉。
+
+```sh
+xime-switch              # 谁在跑就切到另一个
+xime-switch xime         # 明确切到 xime
+xime-switch fcitx5       # 明确切到 fcitx5
+xime-setup --bind        # 给切换绑个快捷键（默认 CTRL + ALT + SPACE，可用 --bind 覆盖）
+```
+
+切换的原则是**怎么启动的就怎么停**：
+
+- **systemd 用户单元**——Omarchy 上的 fcitx5 就是 `omarchy-fcitx5.service`（带
+  `Restart=always`，光 `pkill fcitx5` 两秒后就被拉回来）：disable + stop 对方的
+  单元，enable + start 己方的单元。重启后依然保持选择，这正是 fcitx5 的管理方式。
+- 非 systemd 的会话：pkill 掉在跑的，直接拉起新的。
+- **KDE**：两边都归 KWin 管，切换就是改 kwinrc 的 `[Wayland] InputMethod` 并通知
+  KWin 重载（`kwriteconfig6 --notify`），候选窗当场换人，不用注销。
+
+`xime-setup --auto` 的接线优先级：KDE 写 kwinrc → 有 systemd 用户会话且装了
+`xime.service` 就走 systemd（同时停用 fcitx5 的单元，防止登录时两者赛跑）→
+都没有才落到 exec-once / `o.launch_on_start("xime")` 这类会话启动项。任何时候
+`xime-setup --status` 都能看到当前跑着谁、哪些单元处于 enabled。
 
 ### 调试与自检
 
 ```sh
 xime --check                      # 协议可用性 + 词库/字形/简繁数据统计
+xime-switch                       # xime ⇄ fcitx5 互相切换（运行时生效）
+xime-setup --bind "SUPER+M"       # 给 xime-switch 绑个快捷键
 xime --query jintiantianqihenhao  # 打印候选与解码代价
 xime --query toufa --zh hant      # 繁体形态下看候选（头发 -> 頭髮）
 xime --query hel --en             # 英文前缀补全（hel -> help/held/hello…）
@@ -451,6 +538,7 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 | 改词库要重新构建 | 词条与字形编译进二进制 | 外部词表可热加载，但新字要显示仍需重烘图集 |
 | 英文只用一万高频词 | 词表取自公开的词频统计，不含专有名词与专业术语 | 罕见词、人名、代码标识符补不出来，按回车照原样上屏即可 |
 | 英文不纠错、不预测下一词 | 刻意不做（见第六节） | 打错字不会被改正，也不会替用户补句首大写 |
+| Plasma 下必须由 KWin 拉起 | 只有 KWin 交出的那条连接才被放行绑定 `zwp_input_method_v2` | 手工 `xime &` 通常绑不上；走桌面条目或 `xime-setup` |
 | 简繁只有 OpenCC `s2t` 一种口径 | 未生成 `s2tw`/`s2hk` 变体表（用词差异大，如 软件/軟體） | 台湾/香港用词习惯需另加一列转换表，接口已按 `Variant` 预留 |
 
 ---

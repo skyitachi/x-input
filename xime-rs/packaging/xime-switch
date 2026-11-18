@@ -1,0 +1,222 @@
+#!/bin/sh
+# xime-switch - 在 xime 与 fcitx5 之间互相切换。
+#
+#   xime-switch            按当前谁在跑取反
+#   xime-switch xime       明确切到 xime
+#   xime-switch fcitx5     明确切到 fcitx5
+#
+# 原则：怎么启动的就怎么停。
+#   - systemd 用户单元（Omarchy 的 omarchy-fcitx5.service 带 Restart=always，
+#     光 pkill 两秒后就被拉回来）→ 必须 systemctl stop/disable；
+#   - 会话启动项拉起的 → pkill / 直接拉起新的。
+# xime 内置单实例锁，切换过程中两边的进程就算短暂重叠也不会抢席位。
+#
+# KDE 上输入法由 KWin 管理，切换 = 改 kwinrc 的 InputMethod 并通知 KWin 重载。
+
+set -eu
+
+XIME=${XIME_BIN:-/usr/bin/xime}
+FCITX=${FCITX_BIN:-/usr/bin/fcitx5}
+XIME_UNIT=xime.service
+LOG=${XDG_STATE_HOME:-${HOME}/.local/state}/xime.log
+
+say() { printf '%s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+running() { pgrep -x "$1" >/dev/null 2>&1; }
+
+systemd_ready() {
+    have systemctl || return 1
+    dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+    [ -d "$dir/systemd" ]
+}
+
+unit_installed() {
+    u=$1
+    [ -f "/usr/lib/systemd/user/$u" ] || [ -f "${HOME}/.config/systemd/user/$u" ]
+}
+
+unit_active() { systemctl --user is-active --quiet "$1" 2>/dev/null; }
+
+# fcitx5 的 systemd 单元（Omarchy 用 omarchy-fcitx5.service，发行版也可能叫 fcitx5.service）
+fcitx_units() {
+    for u in omarchy-fcitx5.service fcitx5.service; do
+        unit_installed "$u" && printf '%s\n' "$u"
+    done
+}
+
+fcitx_desktop() {
+    for d in /usr/share/applications/org.fcitx.Fcitx5.desktop \
+             /usr/share/applications/fcitx5-wayland-launcher.desktop; do
+        [ -f "$d" ] && { printf '%s' "$d"; return 0; }
+    done
+    printf '%s' "${FCITX}"
+}
+
+current() {
+    if running xime; then
+        echo xime
+    elif running fcitx5; then
+        echo fcitx5
+    else
+        echo none
+    fi
+}
+
+start_xime() {
+    if systemd_ready && unit_installed "$XIME_UNIT"; then
+        systemctl --user enable --quiet "$XIME_UNIT" 2>/dev/null || true
+        if unit_active "$XIME_UNIT"; then
+            systemctl --user restart --quiet "$XIME_UNIT"
+        else
+            systemctl --user start --quiet "$XIME_UNIT"
+        fi
+        say "  xime 已启动（systemd 用户单元，登录自启）"
+    else
+        mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+        setsid -f "$XIME" >>"$LOG" 2>&1
+        say "  xime 已启动（日志: $LOG）"
+    fi
+}
+
+stop_xime() {
+    if systemd_ready && unit_installed "$XIME_UNIT"; then
+        systemctl --user disable --quiet "$XIME_UNIT" 2>/dev/null || true
+        systemctl --user stop --quiet "$XIME_UNIT" 2>/dev/null || true
+        say "  xime 已停止并取消自启"
+    fi
+    if running xime; then
+        pkill -x xime || true
+        say "  xime 进程已终止"
+    fi
+}
+
+start_fcitx5() {
+    started=""
+    if systemd_ready; then
+        for u in $(fcitx_units); do
+            systemctl --user enable --quiet "$u" 2>/dev/null || true
+            if systemctl --user start --quiet "$u" 2>/dev/null; then
+                started="$u"
+                break
+            fi
+        done
+    fi
+    if [ -n "$started" ]; then
+        say "  fcitx5 已启动（systemd 用户单元 $started，登录自启）"
+    elif ! running fcitx5; then
+        if [ -x "$FCITX" ]; then
+            fcitx5 -d >/dev/null 2>&1 || true
+            say "  fcitx5 已启动（daemon 模式）"
+        else
+            say "  未找到 fcitx5，没法切过去（pacman -S fcitx5）"
+            return 1
+        fi
+    else
+        say "  fcitx5 已在运行"
+    fi
+}
+
+stop_fcitx5() {
+    # Restart=always 的单元必须先 disable+stop，否则 pkill 完 2 秒又被拉回来
+    if systemd_ready; then
+        for u in $(fcitx_units); do
+            systemctl --user disable --quiet "$u" 2>/dev/null || true
+            systemctl --user stop --quiet "$u" 2>/dev/null || true
+            say "  已停止并停用 $u"
+        done
+    fi
+    if running fcitx5; then
+        pkill -x fcitx5 || true
+        say "  fcitx5 进程已终止"
+    fi
+}
+
+# KDE：输入法生命周期归 KWin，切换 = 改 kwinrc 并让它重载
+kde_switch() {
+    target=$1
+    f=${KWINRC:-${HOME}/.config/kwinrc}
+    im_now=$(grep -h '^InputMethod=' "$f" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+    case "${2:-auto}" in
+        xime) target=xime ;;
+        fcitx5) target=fcitx5 ;;
+        *)
+            case "$im_now" in
+                *xime*) target=fcitx5 ;;
+                *) target=xime ;;
+            esac
+            ;;
+    esac
+    if [ "$target" = xime ]; then
+        im=${XIME_DESKTOP:-/usr/share/applications/xime.desktop}
+        [ -f "$im" ] || im="$XIME"
+    else
+        im=$(fcitx_desktop)
+    fi
+    if [ "$im" = "$im_now" ]; then
+        say "KDE: 输入法已是 $im，无需切换"
+        return 0
+    fi
+    if have kwriteconfig6; then
+        kwriteconfig6 --file "$f" --group Wayland --key InputMethod "$im" --notify
+    else
+        tmp=$(mktemp)
+        awk -v im="$im" '
+            BEGIN { inw = 0; set = 0 }
+            /^\[/ { if (inw && !set) { print "InputMethod=" im; set = 1 }
+                    inw = ($0 == "[Wayland]"); print; next }
+            inw && /^InputMethod=/ { print "InputMethod=" im; set = 1; next }
+            { print }
+            END { if (inw && !set) print "InputMethod=" im }
+        ' "$f" > "$tmp" && install -m 644 "$tmp" "$f" && rm -f "$tmp"
+    fi
+    say "KDE: InputMethod → $im"
+    say "  KWin 应会即时重载；若候选窗没动静，注销重登或在系统设置 → 虚拟键盘里按一次应用。"
+}
+
+usage() {
+    cat <<EOF
+用法: xime-switch [xime|fcitx5]
+
+  无参数      按当前谁在跑取反（xime ⇄ fcitx5）
+  xime        切到 xime
+  fcitx5      切到 fcitx5
+EOF
+}
+
+target=${1:-}
+case "$target" in
+    -h|--help) usage; exit 0 ;;
+    xime|fcitx5) ;;
+    "")
+        case "$(current)" in
+            xime) target=fcitx5 ;;
+            *) target=xime ;;
+        esac
+        ;;
+    *) usage; exit 2 ;;
+esac
+
+d=$(printf '%s' "${XDG_CURRENT_DESKTOP:-${XDG_SESSION_DESKTOP:-}}" | tr '[:upper:]' '[:lower:]')
+case "$d" in
+    *kde*|*plasma*)
+        kde_switch "$target"
+        exit 0
+        ;;
+    *gnome*)
+        if [ "$target" = xime ]; then
+            say "GNOME/Mutter 不支持 zwp_input_method_v2，xime 在 GNOME 上不可用。"
+            exit 1
+        fi
+        ;;
+esac
+
+from=$(current)
+say "切换输入法: ${from:-none} → $target"
+if [ "$target" = xime ]; then
+    stop_fcitx5
+    start_xime
+else
+    stop_xime
+    start_fcitx5
+fi
+say "当前: $(current)"

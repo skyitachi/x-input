@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=xime
+Name[zh_CN]=xime 中文输入法
+Comment=Wayland-native Chinese input method
+Comment[zh_CN]=Wayland 原生中文输入法
+Exec=/usr/bin/xime
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+# KDE 由 kwinrc 的 InputMethod 负责拉起（会再走一次单实例锁，双保险），
+# GNOME 实现不了 zwp_input_method_v2，拉起来也没用，都别抢。
+NotShowIn=KDE;GNOME;

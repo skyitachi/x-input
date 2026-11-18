@@ -6,9 +6,9 @@ post_install() {
     if [ -x /usr/bin/xime-setup ]; then
         /usr/bin/xime-setup --kde-default --quiet || true
     fi
-    # sudo pacman -U 时把当前登录用户接上 sway/Hyprland/labwc 的启动项
+    # sudo pacman -U 时把当前登录用户接上（systemd 单元 / 会话启动项）
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-        su -s /bin/sh "$SUDO_USER" -c 'xime-setup --auto --quiet' || true
+        su -s /bin/sh "$SUDO_USER" -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u); xime-setup --auto --quiet' || true
     fi
 }
 

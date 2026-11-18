@@ -18,12 +18,21 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 ARCH=amd64
 OUT="$OUTDIR/xime_${VERSION}_${ARCH}.deb"
 
-mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" "$OUTDIR"
+mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" \
+         "$STAGE/usr/share/applications" "$STAGE/etc/xdg/autostart" \
+         "$STAGE/usr/lib/systemd/user" "$OUTDIR"
 
 install -m 755 "$BIN" "$STAGE/usr/bin/xime"
 install -m 755 packaging/xime-setup "$STAGE/usr/bin/xime-setup"
+install -m 755 packaging/xime-switch "$STAGE/usr/bin/xime-switch"
 install -m 644 README.md "$STAGE/usr/share/doc/xime/README.md"
 install -m 644 packaging/copyright "$STAGE/usr/share/doc/xime/copyright"
+# KDE「系统设置 → 键盘 → 虚拟键盘」靠这个条目发现 xime
+install -m 644 packaging/xime.desktop "$STAGE/usr/share/applications/xime.desktop"
+# fcitx5 式的开机自启（NotShowIn 挡掉了 KDE/GNOME；xime 内置单实例锁，重复拉起无害）
+install -m 644 packaging/xime-autostart.desktop "$STAGE/etc/xdg/autostart/xime.desktop"
+# 与 fcitx5 同款生命周期管理（Omarchy 上 fcitx5 就是 systemd 用户单元）
+install -m 644 packaging/xime.service "$STAGE/usr/lib/systemd/user/xime.service"
 install -m 644 packaging/postinst "$STAGE/DEBIAN/postinst"
 install -m 644 packaging/prerm "$STAGE/DEBIAN/prerm"
 install -m 644 packaging/postrm "$STAGE/DEBIAN/postrm"
@@ -51,7 +60,7 @@ else
     ( cd "$STAGE/DEBIAN" && tar -czf "$root/build/deb-arch/control.tar.gz" \
           --owner=0 --group=0 --numeric-owner . )
     ( cd "$STAGE" && tar -czf "$root/build/deb-arch/data.tar.gz" \
-          --owner=0 --group=0 --numeric-owner ./usr )
+          --owner=0 --group=0 --numeric-owner ./usr ./etc )
     ( cd build/deb-arch && ar rc "$root/$OUT" debian-binary control.tar.gz data.tar.gz )
 fi
 

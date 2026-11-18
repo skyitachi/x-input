@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=xime
+Name[zh_CN]=xime 中文输入法
+Name[zh_TW]=xime 中文輸入法
+GenericName=Input Method
+GenericName[zh_CN]=输入法
+GenericName[zh_TW]=輸入法
+Comment=Wayland-native Chinese input method (no fcitx/ibus framework)
+Comment[zh_CN]=Wayland 原生中文输入法，不依赖 fcitx/ibus 框架
+Comment[zh_TW]=Wayland 原生中文輸入法，不依賴 fcitx/ibus 框架
+Exec=/usr/bin/xime
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+NoDisplay=true
+StartupNotify=false
+X-KDE-StartupNotify=false
+# KDE 的「系统设置 → 键盘 → 虚拟键盘」靠这一行发现可用的输入法，
+# 选中后把本文件的路径写进 kwinrc 的 [Wayland] InputMethod，由 KWin 拉起
+# 并把专用连接（WAYLAND_SOCKET）交给它。
+X-KDE-Wayland-VirtualKeyboard=true

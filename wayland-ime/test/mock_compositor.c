@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -625,7 +626,25 @@ int main(void)
         fprintf(stderr, "无法创建 wl_display\n");
         return 2;
     }
-    if (wl_display_add_socket(T.display, "xime-test") != 0) {
+    /* MOCK_INHERIT=1：不使用命名 socket，改成 socketpair + WAYLAND_SOCKET 传 fd，
+     * 复现 KWin 拉起输入法的方式（专用连接才允许绑定 zwp_input_method_v2）。 */
+    const char *inh = getenv("MOCK_INHERIT");
+    int inherit_fd = -1;
+    if (inh && *inh && strcmp(inh, "0") != 0) {
+        int sv[2];
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+            perror("socketpair");
+            return 2;
+        }
+        /* add_socket_fd 只接受监听 socket，已连接的 fd 要用 wl_client_create 接管，
+         * 这正是合成器把专用连接交给输入法进程时做的事。 */
+        if (!wl_client_create(T.display, sv[0])) {
+            fprintf(stderr, "无法接管 socketpair 的一端\n");
+            return 2;
+        }
+        inherit_fd = sv[1];
+        printf("模式：MOCK_INHERIT（WAYLAND_SOCKET 传递连接）\n");
+    } else if (wl_display_add_socket(T.display, "xime-test") != 0) {
         fprintf(stderr, "无法监听 wayland socket\n");
         return 2;
     }
@@ -659,7 +678,15 @@ int main(void)
             const char *ea = getenv("XIME_ARGS");
             int argc = 0;
 
-            setenv("WAYLAND_DISPLAY", "xime-test", 1);
+            if (inherit_fd >= 0) {
+                char fdstr[16];
+
+                snprintf(fdstr, sizeof(fdstr), "%d", inherit_fd);
+                setenv("WAYLAND_SOCKET", fdstr, 1);
+                unsetenv("WAYLAND_DISPLAY");
+            } else {
+                setenv("WAYLAND_DISPLAY", "xime-test", 1);
+            }
             argv[argc++] = (char *)client;
             argv[argc++] = (char *)"--verbose";
             if (ea) {

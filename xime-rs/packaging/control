@@ -8,7 +8,10 @@ Maintainer: xime <xime@localhost>
 Description: 单包装完即用的 Wayland 原生中文输入法（Rust 实现）
  直接基于 zwp_input_method_v2 协议实现的输入法，不需要 fcitx/ibus 框架，
  不需要配置环境变量，不需要 GTK/Qt 输入法模块。安装后即可在 KDE Plasma(KWin)
- 与所有 wlroots 合成器上使用。
+ 与所有 wlroots 合成器上使用；KDE 下会装一个带 X-KDE-Wayland-VirtualKeyboard
+ 标记的桌面条目，可在「系统设置 → 键盘 → 虚拟键盘」里直接选中 xime。
+ 与 fcitx5 完全共存：xime-switch 随时互相切换（systemd 用户单元 / 进程级均可），
+ 内置会话级单实例锁，重复拉起不会抢席位。
  .
  本包是纯 Rust 版本，采用 musl 静态链接：二进制不依赖任何动态库
  （无 libc、无 libwayland、无 libxkbcommon、无 freetype），因此本包

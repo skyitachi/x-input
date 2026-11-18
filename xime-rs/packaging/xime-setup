@@ -1,11 +1,21 @@
 #!/bin/sh
 # xime-setup - 把 xime 接到当前 Wayland 会话的启动链上。
 #
-# 设计目标：装完 deb 之后用户不需要打开任何设置面板、不需要手改配置文件。
+# 设计目标：装完之后用户不需要手改配置文件、不需要设环境变量。
 # 本脚本幂等（重复执行不会重复追加），做任何修改前都会先备份。
+#
+# 三条接线方式，按桌面与机器能力选择：
+#   KDE/KWin  —— 输入法由 KWin 拉起。「系统设置 → 键盘 → 虚拟键盘」里能选中的输入法，
+#               本质上就是 /usr/share/applications 下带 X-KDE-Wayland-VirtualKeyboard=true
+#               的桌面条目；选中即把条目路径写进 kwinrc 的 [Wayland] InputMethod。
+#   systemd   —— fcitx5 在 Omarchy 上就是这么跑的（用户单元 + graphical-session.target），
+#               xime 随包带一个等价的 xime.service；这是最像 fcitx 的方式。
+#   wlroots   —— 没有 systemd 用户会话时的兜底：写进会话启动项（exec-once / Lua）。
+# 运行中切换用 xime-switch（xime 与 fcitx5 互相切换）。
 set -eu
 
-BIN=/usr/bin/xime
+BIN=${XIME_BIN:-/usr/bin/xime}
+DESKTOP=${XIME_DESKTOP:-/usr/share/applications/xime.desktop}
 MARK="# added by xime-setup"
 
 DRY=0
@@ -28,6 +38,33 @@ detect_desktop() {
     esac
 }
 
+# KDE 的虚拟键盘列表只认桌面条目。包里的条目缺失时（例如直接从源码目录跑），
+# 退回可执行文件路径——KWin 也接受直接给一个可执行文件。
+im_entry() {
+    if [ -f "$DESKTOP" ]; then printf '%s' "$DESKTOP"; else printf '%s' "$BIN"; fi
+}
+
+# fcitx5 可能以 systemd 用户单元的形态存在（Omarchy 的 omarchy-fcitx5.service
+# 就是这种，Restart=always——这种情况下光 pkill 没用，必须走 systemctl）。
+fcitx_units() {
+    for u in omarchy-fcitx5.service fcitx5.service; do
+        if [ -f "/usr/lib/systemd/user/$u" ] || [ -f "${HOME}/.config/systemd/user/$u" ]; then
+            printf '%s\n' "$u"
+        fi
+    done
+}
+
+systemd_ready() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+    [ -d "$dir/systemd" ]
+}
+
+unit_installed() {
+    u=$1
+    [ -f "/usr/lib/systemd/user/$u" ] || [ -f "${HOME}/.config/systemd/user/$u" ]
+}
+
 append_once() {
     file=$1
     line=$2
@@ -43,53 +80,128 @@ append_once() {
     fi
 }
 
+# "CTRL + ALT + SPACE" -> mods "CTRL ALT" 与 key "SPACE"（Hyprland bind 语法）
+trim() {
+    p=$1
+    p=${p#"${p%%[! ]*}"}
+    p=${p%"${p##*[! ]}"}
+    printf '%s' "$p"
+}
+
+split_key() {
+    oldIFS=$IFS
+    IFS='+'
+    set -- $1
+    IFS=$oldIFS
+    mods=""
+    pending=""
+    for p in "$@"; do
+        p=$(trim "$p")
+        [ -z "$p" ] && continue
+        if [ -n "$pending" ]; then
+            mods="$mods $pending"
+        fi
+        pending=$p
+    done
+    key=$pending
+    mods=${mods# }
+}
+
 kde_apply() {
     f=${KWINRC:-/etc/xdg/kwinrc}
-    say "KDE/KWin：写入系统级默认值 $f 的 [Wayland] InputMethod"
+    im=$(im_entry)
+    say "KDE/KWin：把 $im 写进 $f 的 [Wayland] InputMethod"
     if [ "$DRY" -eq 1 ]; then
-        printf '[dry-run] 合并 [Wayland] InputMethod=%s 到 %s\n' "$BIN" "$f"
+        printf '[dry-run] 合并 [Wayland] InputMethod=%s 到 %s\n' "$im" "$f"
         return 0
     fi
     tmp=$(mktemp)
     if [ -f "$f" ]; then
         cp -n "$f" "$f.xime-backup" 2>/dev/null || true
-        if grep -q '^\[Wayland\]' "$f"; then
-            awk -v bin="$BIN" '
-                BEGIN { inw = 0; set = 0 }
-                /^\[/ {
-                    if (inw && !set) { print "InputMethod=" bin; set = 1 }
-                    inw = ($0 == "[Wayland]") ? 1 : 0
-                    print; next
+        awk -v im="$im" '
+            function flush() {
+                if (!set_im) { print "InputMethod=" im; set_im = 1 }
+                if (!set_mode) { print "VirtualKeyboardMode=2"; set_mode = 1 }
+            }
+            BEGIN { inw = 0; seen = 0; set_im = 0; set_mode = 0 }
+            /^\[/ {
+                if (inw) flush()
+                inw = ($0 == "[Wayland]")
+                if (inw) seen = 1
+                print
+                next
+            }
+            inw && /^InputMethod=/ {
+                if (!set_im) { print "InputMethod=" im; set_im = 1 }
+                next
+            }
+            inw && /^VirtualKeyboardMode=/ {
+                # 0 = 完全禁用，KWin 根本不会拉起输入法；其他值尊重用户选择
+                if (!set_mode) {
+                    v = $0
+                    sub(/^VirtualKeyboardMode=/, "", v)
+                    print (v == "0" || v == "" ? "VirtualKeyboardMode=2" : $0)
+                    set_mode = 1
                 }
-                inw && /^InputMethod=/ { print "InputMethod=" bin; set = 1; next }
-                { print }
-                END { if (inw && !set) print "InputMethod=" bin }
-            ' "$f" > "$tmp"
-        else
-            cat "$f" > "$tmp"
-            printf '\n[Wayland]\nInputMethod=%s\n' "$BIN" >> "$tmp"
-        fi
+                next
+            }
+            { print }
+            # 文件里连 [Wayland] 段都没有时，补一段
+            END {
+                if (inw) flush()
+                else if (!seen) { print ""; print "[Wayland]"; flush() }
+            }
+        ' "$f" > "$tmp"
     else
-        printf '[Wayland]\nInputMethod=%s\n' "$BIN" > "$tmp"
+        printf '[Wayland]\nInputMethod=%s\nVirtualKeyboardMode=2\n' "$im" > "$tmp"
     fi
     install -m 644 "$tmp" "$f"
     rm -f "$tmp" 2>/dev/null || true
-    say "  完成。KWin 下次启动会话时会把 xime 作为输入法拉起。"
+    say "  完成。KWin 下次启动会话时会把 xime 拉起（系统设置的虚拟键盘列表里也会显示为已选中）。"
 }
 
 kde_remove() {
     f=${KWINRC:-/etc/xdg/kwinrc}
     [ -f "$f" ] || return 0
-    grep -q "InputMethod=$BIN" "$f" || return 0
-    say "移除 $f 中的 InputMethod=$BIN"
+    im=$(im_entry)
+    grep -q "InputMethod=$im" "$f" || grep -q "InputMethod=$BIN" "$f" || return 0
+    say "移除 $f 中指向 xime 的 InputMethod"
     [ "$DRY" -eq 1 ] && return 0
     tmp=$(mktemp)
-    awk -v bin="$BIN" '
-        $0 == "InputMethod=" bin { next }
+    awk -v im="$im" -v bin="$BIN" '
+        $0 == "InputMethod=" im || $0 == "InputMethod=" bin { next }
         { print }
     ' "$f" > "$tmp"
     install -m 644 "$tmp" "$f"
     rm -f "$tmp" 2>/dev/null || true
+}
+
+# systemd 用户单元接线（Omarchy 上 fcitx5 就是这么管的，xime 用同一套机制，
+# 这样两者可以干净地互相切换：stop 一个、start 另一个，谁都不留残余进程）
+systemd_wiring() {
+    if [ "$DRY" -eq 1 ]; then
+        say "[dry-run] systemctl --user daemon-reload && enable --now xime.service"
+    else
+        systemctl --user daemon-reload 2>/dev/null || true
+        if ! systemctl --user enable --quiet xime.service 2>/dev/null; then
+            return 1
+        fi
+        # 会话活着就直接拉起；ConditionEnvironment=WAYLAND_DISPLAY 不满足时
+        # systemd 会跳过启动，等下次登录自然生效
+        systemctl --user start --quiet xime.service 2>/dev/null || true
+        say "  xime 已注册为 systemd 用户单元（登录自启，崩溃自动拉回）。"
+    fi
+    # fcitx5 的单元若还开着，下次登录两个输入法会赛跑；停用之（xime-switch 可切回）
+    for u in $(fcitx_units); do
+        if [ "$DRY" -eq 1 ]; then
+            say "[dry-run] systemctl --user disable --now $u"
+        else
+            systemctl --user disable --quiet "$u" 2>/dev/null || true
+            systemctl --user stop --quiet "$u" 2>/dev/null || true
+            say "  已停用 $u（要用回 fcitx5：xime-switch fcitx5）"
+        fi
+    done
+    return 0
 }
 
 autostart_wlroots() {
@@ -100,9 +212,13 @@ autostart_wlroots() {
             if [ -f "$cfg" ]; then append_once "$cfg" "exec $BIN"
             else say "  未发现 $cfg（安装 sway 后再执行 xime-setup --auto）"; fi ;;
         hyprland)
+            # 传统 hyprland.conf 写法；Omarchy 等新一代配置把 autostart 拆成 Lua，
+            # 那里的惯用法是 o.launch_on_start("xime")。
             cfg=${HOME}/.config/hypr/hyprland.conf
+            lua=${HOME}/.config/hypr/autostart.lua
             if [ -f "$cfg" ]; then append_once "$cfg" "exec-once = $BIN"
-            else say "  未发现 $cfg（安装 Hyprland 后再执行 xime-setup --auto）"; fi ;;
+            elif [ -f "$lua" ]; then append_once "$lua" 'o.launch_on_start("xime")'
+            else say "  未发现 $cfg 或 $lua（安装 Hyprland 后再执行 xime-setup --auto）"; fi ;;
         labwc)
             cfg=${HOME}/.config/labwc/autostart
             if [ -f "$cfg" ]; then append_once "$cfg" "$BIN &"
@@ -112,14 +228,54 @@ autostart_wlroots() {
     esac
 }
 
+# 把 xime-switch 绑到快捷键上。Omarchy 的 Lua 绑定（o.bind）优先，其次传统 conf。
+bind_key() {
+    split_key "${1:-"CTRL + ALT + SPACE"}"
+    if [ -n "$mods" ]; then
+        mjoin=$(printf '%s' "$mods" | sed 's/  */ + /g')
+        full="$mjoin + $key"
+    else
+        full=$key
+    fi
+    b=${HOME}/.config/hypr/bindings.lua
+    conf=${HOME}/.config/hypr/hyprland.conf
+    if [ -f "$b" ]; then
+        append_once "$b" "o.bind(\"$full\", \"切换输入法 (xime/fcitx5)\", \"xime-switch\")"
+    elif [ -f "$conf" ]; then
+        mup=$(printf '%s' "$mods" | tr '[:lower:]' '[:upper:]')
+        kup=$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')
+        append_once "$conf" "bind = $mup, $kup, exec, xime-switch"
+    else
+        say "  未发现 Hyprland 配置；sway 用户可在 config 里加: bindsym $mods+$key exec xime-switch"
+    fi
+}
+
 status() {
     say "会话: ${XDG_CURRENT_DESKTOP:-未知}  类型: $(detect_desktop)"
     say "二进制: $BIN $([ -x $BIN ] && echo 存在 || echo 缺失)"
+    if [ -f "$DESKTOP" ]; then
+        say "桌面条目: $DESKTOP 存在（KDE 系统设置的虚拟键盘列表里会显示）"
+    else
+        say "桌面条目: $DESKTOP 缺失（只影响 KDE 的系统设置列表，不影响 wlroots）"
+    fi
+    procs=""
+    pgrep -x xime >/dev/null 2>&1 && procs="xime"
+    pgrep -x fcitx5 >/dev/null 2>&1 && procs="$procs fcitx5"
+    say "运行中的输入法进程: ${procs:-无}"
+    if command -v systemctl >/dev/null 2>&1 && systemd_ready; then
+        xst=$(systemctl --user is-enabled xime.service 2>/dev/null || echo 未安装)
+        fst=""
+        for u in $(fcitx_units); do
+            fst="$fst $u=$(systemctl --user is-enabled "$u" 2>/dev/null || echo ?)"
+        done
+        say "systemd 用户单元: xime=$xst${fst:-  fcitx5=未安装}"
+    fi
     if [ -f /etc/xdg/kwinrc ]; then
         say "kwinrc 默认值: $(grep -h '^InputMethod=' /etc/xdg/kwinrc 2>/dev/null || echo 未设置)"
     else
         say "kwinrc 默认值: /etc/xdg/kwinrc 不存在"
     fi
+    say "切换输入法: xime-switch（xime ⇄ fcitx5）"
     if [ -x "$BIN" ]; then "$BIN" --check || true; fi
 }
 
@@ -130,6 +286,7 @@ usage() {
   --auto                 自动检测当前桌合并完成接线（推荐）
   --kde-default          只写 KDE/KWin 的系统级默认值
   --remove-kde-default   撤销上面的修改
+  --bind [按键]          把 xime-switch 绑到快捷键（默认 CTRL + ALT + SPACE）
   --status               显示当前状态并检查协议可用性
   --dry-run              只打印将要做的修改
   --quiet                安静模式
@@ -137,11 +294,20 @@ EOF
 }
 
 MODE=auto
+BIND=
 while [ $# -gt 0 ]; do
     case "$1" in
         --auto) MODE=auto ;;
         --kde-default) MODE=kde ;;
         --remove-kde-default) MODE=kde-remove ;;
+        --bind)
+            MODE=bind
+            # 可选参数：紧跟的按键（如 --bind "SUPER+M"），缺省用默认键
+            if [ -n "${2:-}" ] && [ "${2#-*}" = "$2" ]; then
+                BIND="$2"
+                shift
+            fi
+            ;;
         --status) MODE=status ;;
         --dry-run) DRY=1 ;;
         --quiet) QUIET=1 ;;
@@ -153,6 +319,7 @@ done
 
 case "$MODE" in
     status) status ;;
+    bind) bind_key "$BIND" ;;
     kde)
         # KWINRC 是给打包 QA 用的测试钩子：指向临时文件时不需要 root 也能跑合并逻辑
         if [ "$(id -u)" -eq 0 ] || [ -n "${KWINRC:-}" ]; then
@@ -175,11 +342,18 @@ case "$MODE" in
             gnome)
                 say "GNOME/Mutter 不实现 zwp_input_method_v2，本方案在 GNOME 上不可用。"
                 say "（这是合成器的限制，不是本程序的问题：GNOME 走的是 ibus 的 GTK/Qt 模块路径。）" ;;
-            sway|hyprland|labwc|wlroots) autostart_wlroots "$kind" ;;
             *)
-                say "无法确定合成器类型。可手动在会话启动脚本里执行: $BIN"
-                say "KDE 用户请执行: sudo xime-setup --kde-default" ;;
+                # 有 systemd 用户会话且包里带了单元：走和 fcitx5 一样的路
+                if systemd_ready && unit_installed xime.service && systemd_wiring; then
+                    :
+                else
+                    if [ "$DRY" -eq 0 ]; then
+                        say "  无 systemd 用户会话或单元缺失，退回会话启动项"
+                    fi
+                    autostart_wlroots "$kind"
+                fi ;;
         esac
         say "完成后重新登录（KDE）或重载合成器配置（sway/Hyprland）即生效。"
+        say "运行中切换输入法: xime-switch"
         ;;
 esac

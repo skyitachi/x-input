@@ -7,6 +7,7 @@ mod popup;
 mod proto;
 mod render;
 mod shm;
+mod single_instance;
 mod wire;
 mod zh;
 
@@ -82,7 +83,7 @@ impl Xime {
         let conn = match Conn::connect() {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("xime: 无法连接 Wayland 合成器（检查 WAYLAND_DISPLAY / XDG_RUNTIME_DIR）: {e}");
+                eprintln!("xime: 无法连接 Wayland 合成器（检查 WAYLAND_SOCKET / WAYLAND_DISPLAY / XDG_RUNTIME_DIR）: {e}");
                 return None;
             }
         };
@@ -1031,6 +1032,13 @@ fn main() {
 
     let en_passthrough = args.iter().any(|a| a == "--en-passthrough");
 
+    // 单实例：systemd、KWin、XDG autostart、手工启动都可能在拉起 xime，
+    // 谁先拿到锁谁当输入法，后来者安静退出（退出码 0，免得 systemd 反复重启）。
+    if !single_instance::try_lock() {
+        eprintln!("xime: 已有实例在运行，退出（运行中切换输入法用 xime-switch）");
+        std::process::exit(0);
+    }
+
     let mut x = match Xime::new(
         inline_cands,
         verbose,
@@ -1057,6 +1065,16 @@ fn check(variant: zh::Variant) {
             std::process::exit(1);
         }
     };
+    // 是「合成器把连接塞过来」还是「自己连」——直接决定 KDE 下能不能拿到席位
+    match wire::inherited_socket_str() {
+        Some(fd) => println!(
+            "连接方式：WAYLAND_SOCKET={}（由合成器/会话拉起，可绑定输入法席位）",
+            fd.trim()
+        ),
+        None => println!(
+            "连接方式：自行连接 WAYLAND_DISPLAY（普通客户端；KDE 下须由 KWin 拉起才拿得到席位）"
+        ),
+    }
     let reg = c.alloc_id();
     let cb = c.alloc_id();
     proto::get_registry(&mut c, reg).expect("发 get_registry 失败");
@@ -1132,7 +1150,9 @@ fn check(variant: zh::Variant) {
         println!("  {:<38} 无", "其他输入法进程");
     } else {
         println!("  {:<38} {}", "其他输入法进程", others.join(", "));
-        println!("      → 先停掉它们（如 pkill fcitx5），否则 xime 拿不到席位");
+        println!(
+            "      → 切换输入法用 xime-switch（别直接 pkill：Omarchy 的 fcitx5 是\n        systemd 用户单元，Restart=always 两秒后就会把它拉回来）"
+        );
     }
 
     println!();

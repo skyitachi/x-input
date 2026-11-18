@@ -120,6 +120,14 @@ pub struct Conn {
 
 impl Conn {
     pub fn connect() -> io::Result<Conn> {
+        // 合成器直接拉起输入法时（KWin 的「虚拟键盘」就是这条路），它不让你自己
+        // 去连 socket，而是把一个**已经连好的** fd 通过 WAYLAND_SOCKET 传进来。
+        // 只有这条连接才被允许绑定 zwp_input_method_v2；自己按 WAYLAND_DISPLAY
+        // 另开一条，拿到的是普通客户端身份，绑定时会被合成器拒掉。
+        if let Some(fd) = inherited_socket() {
+            return Ok(Conn::from_fd(fd));
+        }
+
         let path = socket_path()?;
         let cpath = std::ffi::CString::new(path.clone())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "路径含 NUL"))?;
@@ -162,7 +170,23 @@ impl Conn {
             ));
         }
 
-        Ok(Conn { fd, next_id: 2, rbuf: Vec::with_capacity(4096), rfds: VecDeque::new() })
+        Ok(Conn::from_fd(fd))
+    }
+
+    /// 接管一个已连接的 fd：补上 CLOEXEC 与非阻塞，语义与 libwayland 一致。
+    /// 非阻塞是必须的——事件循环靠 `wait()` 的 poll 决定何时读，读到 EAGAIN 也要能退出来。
+    fn from_fd(fd: RawFd) -> Conn {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+            let fl = libc::fcntl(fd, libc::F_GETFL);
+            if fl >= 0 {
+                libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+            }
+        }
+        Conn { fd, next_id: 2, rbuf: Vec::with_capacity(4096), rfds: VecDeque::new() }
     }
 
     /// 分配一个新对象 ID。Wayland 允许客户端单调递增使用 32 位 ID 空间，
@@ -299,6 +323,33 @@ impl Drop for Conn {
 
 // ---------------------------------------------------------------- 底层 IO
 
+/// 合成器是否通过 `WAYLAND_SOCKET` 把连接直接交了过来。
+///
+/// 判断依据只有环境变量（fd 号本身在解析时才用到），供 `--check` 说明当前是
+/// 「合成器拉起」还是「自己连」。
+pub fn inherited_socket_str() -> Option<String> {
+    std::env::var("WAYLAND_SOCKET").ok().filter(|s| !s.trim().is_empty())
+}
+
+/// 取出 WAYLAND_SOCKET 里的 fd。不是合法 fd 就当没设（退回按 WAYLAND_DISPLAY 连），
+/// 免得一个脏环境变量让程序连错误信息都给不出来。
+fn inherited_socket() -> Option<RawFd> {
+    let v = inherited_socket_str()?;
+    let fd: RawFd = v.trim().parse().ok()?;
+    check_fd(fd)
+}
+
+/// fd 还活着才算数：环境变量可能是陈旧或伪造的（比如从父 shell 继承下来）。
+fn check_fd(fd: RawFd) -> Option<RawFd> {
+    if fd < 0 {
+        return None;
+    }
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return None;
+    }
+    Some(fd)
+}
+
 fn socket_path() -> io::Result<String> {
     let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into());
     if display.starts_with('/') {
@@ -347,6 +398,54 @@ fn sendmsg_fds(fd: RawFd, data: &[u8], fds: &[RawFd]) -> io::Result<()> {
                 continue;
             }
             _ => return Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn socketpair() -> (RawFd, RawFd) {
+        let mut sv = [0 as RawFd; 2];
+        let r = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, sv.as_mut_ptr()) };
+        assert_eq!(r, 0, "socketpair 失败");
+        (sv[0], sv[1])
+    }
+
+    /// 合成器交过来的 fd 要补上 CLOEXEC（避免后续 fork/exec 时泄漏给子进程），
+    /// 且必须是非阻塞，否则事件循环会卡在 read 上。
+    #[test]
+    fn from_fd_sets_cloexec_and_nonblock() {
+        let (a, b) = socketpair();
+        let c = Conn::from_fd(a);
+        let fd_flags = unsafe { libc::fcntl(a, libc::F_GETFD) };
+        let st_flags = unsafe { libc::fcntl(a, libc::F_GETFL) };
+        assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "应设置 FD_CLOEXEC");
+        assert_ne!(st_flags & libc::O_NONBLOCK, 0, "应设为非阻塞");
+        drop(c); // 顺带关掉 a
+        unsafe { libc::close(b) };
+    }
+
+    /// 陈旧/伪造的 fd 号不能被当成有效连接
+    #[test]
+    fn check_fd_rejects_bad_fd() {
+        assert!(check_fd(-1).is_none());
+        let (a, b) = socketpair();
+        unsafe {
+            libc::close(a);
+            libc::close(b);
+        }
+        assert!(check_fd(a).is_none(), "已关闭的 fd 应被判无效");
+    }
+
+    #[test]
+    fn check_fd_accepts_live_fd() {
+        let (a, b) = socketpair();
+        assert_eq!(check_fd(a), Some(a));
+        unsafe {
+            libc::close(a);
+            libc::close(b);
         }
     }
 }
