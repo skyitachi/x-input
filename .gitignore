@@ -1,0 +1,58 @@
+# x-input 工作区忽略规则
+#
+# 原则：只提交「不联网也能直接构建」的源码和构建输入；
+# 凡是能从它们重新生成的产物（编译中间件、安装包、下载的词库语料）都不入库。
+
+# ---------- 通用编译产物 ----------
+*.o
+*.d
+*.a
+*.so
+*.so.*
+*.deb
+*.rpm
+*.tar.gz
+# Arch 包（build-arch.sh 产出）
+*.pkg.tar.zst
+*.pkg.tar.xz
+core
+core.*
+
+# ---------- Rust（xime-rs/、probe-rs/）----------
+target/
+**/*.rs.bk
+# Cargo.lock 不忽略：这两个都是 bin crate，锁文件要跟着提交
+# xime-rs/build/ 是打包暂存树（deb 树、arch-pkg 树，里面各有一份 7.7MB 静态二进制）
+xime-rs/build/
+
+# ---------- wayland-ime（C + Makefile）----------
+# build/ 里是 .o/.d、生成的协议代码、图集 C 源码、deb 树和测试二进制
+wayland-ime/build/
+# dist/ 是打好的 .deb
+wayland-ime/dist/
+# .cache/ 是 scripts/fetch-dict.sh 下载的 16MB 词库语料，可重新拉取
+wayland-ime/.cache/
+
+# ---------- Python 工具（tools/mkdict.py）----------
+__pycache__/
+*.pyc
+
+# ---------- 编辑器 / 系统 ----------
+.DS_Store
+*.swp
+*~
+
+# ---------- 本地智能体工作区 ----------
+# .workbuddy 存的是会话记忆和本地配置，不属于项目源码。
+# 想把 .workbuddy/memory 一起做版本管理就删掉下面这行。
+.workbuddy/
+
+# 注意：以下文件是「预生成但仍需入库」的构建输入，故意不忽略——
+#   wayland-ime/src/dict_gen.h   7.5MB，make dict 生成，重新生成需要联网语料
+#   xime-rs/data/dict.bin        4.3MB，include_bytes! 编进二进制
+#   xime-rs/data/atlas.bin       2.4MB，同上（7536 字形，含繁体用字）
+#   xime-rs/data/zh.bin          97KB，简繁转换表，同上
+#   xime-rs/data/hant-chars.txt  繁体字符集，重新烘焙字形时作为 mkfont 第 4 参数
+#   xime-rs/dist/*.png           README 里引用的候选窗样本
+#   wayland-ime/docs/candidate-bar.bmp  README 里引用的候选条截图
+# 若想改成"一律不入库、构建前先 make dict"，去掉上面注释并把这几条加为忽略。

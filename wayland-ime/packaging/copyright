@@ -1,0 +1,17 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: xime
+
+Files: src/dict_gen.h
+Comment: 该文件由 tools/mkdict.py 从以下数据源生成，均为 MIT 许可：
+ mozillazg/pinyin-data (c) 2016 mozillazg
+ mozillazg/phrase-pinyin-data (c) 2017 mozillazg
+ fxsjy/jieba (c) 2013 Sun Junyi
+ hermitdave/FrequencyWords (c) 2016 Hermit Dave
+License: MIT
+
+Files: *
+License: MIT
+ 本包内除 third_party/stb_truetype.h 外的代码均为 MIT 许可。
+ third_party/stb_truetype.h 为 public domain (unlicense / MIT 双许可)，版权归 Sean Barrett 所有。
+ 构建期烘焙的字形图集来自本机安装的 CJK 字体，仅包含词典所需字符的点阵数据，
+ 该点阵数据随字体自身的许可证（常见为 SIL OFL 1.1）分发。

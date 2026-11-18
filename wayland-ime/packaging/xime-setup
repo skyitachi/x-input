@@ -1,0 +1,185 @@
+#!/bin/sh
+# xime-setup - 把 xime 接到当前 Wayland 会话的启动链上。
+#
+# 设计目标：装完 deb 之后用户不需要打开任何设置面板、不需要手改配置文件。
+# 本脚本幂等（重复执行不会重复追加），做任何修改前都会先备份。
+set -eu
+
+BIN=/usr/bin/xime
+MARK="# added by xime-setup"
+
+DRY=0
+QUIET=0
+
+say() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+run() { if [ "$DRY" -eq 1 ]; then printf '[dry-run] %s\n' "$*"; else "$@"; fi; }
+
+detect_desktop() {
+    d=${XDG_CURRENT_DESKTOP:-${XDG_SESSION_DESKTOP:-}}
+    d=$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]' | tr ',' ' ')
+    case "$d" in
+        *kde*|*plasma*) echo kde ;;
+        *gnome*|*unity*) echo gnome ;;
+        *sway*) echo sway ;;
+        *hyprland*) echo hyprland ;;
+        *labwc*) echo labwc ;;
+        *wlroots*|*river*|*wayfire*) echo wlroots ;;
+        *) echo unknown ;;
+    esac
+}
+
+append_once() {
+    file=$1
+    line=$2
+    [ -f "$file" ] || return 0
+    if grep -qxF "$line" "$file" 2>/dev/null; then
+        say "  已存在，跳过: $file"
+        return 0
+    fi
+    say "  追加到 $file: $line"
+    if [ "$DRY" -eq 0 ]; then
+        cp -n "$file" "$file.xime-backup" 2>/dev/null || true
+        printf '\n%s\n%s\n' "$MARK" "$line" >> "$file"
+    fi
+}
+
+kde_apply() {
+    f=${KWINRC:-/etc/xdg/kwinrc}
+    say "KDE/KWin：写入系统级默认值 $f 的 [Wayland] InputMethod"
+    if [ "$DRY" -eq 1 ]; then
+        printf '[dry-run] 合并 [Wayland] InputMethod=%s 到 %s\n' "$BIN" "$f"
+        return 0
+    fi
+    tmp=$(mktemp)
+    if [ -f "$f" ]; then
+        cp -n "$f" "$f.xime-backup" 2>/dev/null || true
+        if grep -q '^\[Wayland\]' "$f"; then
+            awk -v bin="$BIN" '
+                BEGIN { inw = 0; set = 0 }
+                /^\[/ {
+                    if (inw && !set) { print "InputMethod=" bin; set = 1 }
+                    inw = ($0 == "[Wayland]") ? 1 : 0
+                    print; next
+                }
+                inw && /^InputMethod=/ { print "InputMethod=" bin; set = 1; next }
+                { print }
+                END { if (inw && !set) print "InputMethod=" bin }
+            ' "$f" > "$tmp"
+        else
+            cat "$f" > "$tmp"
+            printf '\n[Wayland]\nInputMethod=%s\n' "$BIN" >> "$tmp"
+        fi
+    else
+        printf '[Wayland]\nInputMethod=%s\n' "$BIN" > "$tmp"
+    fi
+    install -m 644 "$tmp" "$f"
+    rm -f "$tmp" 2>/dev/null || true
+    say "  完成。KWin 下次启动会话时会把 xime 作为输入法拉起。"
+}
+
+kde_remove() {
+    f=${KWINRC:-/etc/xdg/kwinrc}
+    [ -f "$f" ] || return 0
+    grep -q "InputMethod=$BIN" "$f" || return 0
+    say "移除 $f 中的 InputMethod=$BIN"
+    [ "$DRY" -eq 1 ] && return 0
+    tmp=$(mktemp)
+    awk -v bin="$BIN" '
+        $0 == "InputMethod=" bin { next }
+        { print }
+    ' "$f" > "$tmp"
+    install -m 644 "$tmp" "$f"
+    rm -f "$tmp" 2>/dev/null || true
+}
+
+autostart_wlroots() {
+    kind=$1
+    case "$kind" in
+        sway)
+            cfg=${HOME}/.config/sway/config
+            if [ -f "$cfg" ]; then append_once "$cfg" "exec $BIN"
+            else say "  未发现 $cfg（安装 sway 后再执行 xime-setup --auto）"; fi ;;
+        hyprland)
+            cfg=${HOME}/.config/hypr/hyprland.conf
+            if [ -f "$cfg" ]; then append_once "$cfg" "exec-once = $BIN"
+            else say "  未发现 $cfg（安装 Hyprland 后再执行 xime-setup --auto）"; fi ;;
+        labwc)
+            cfg=${HOME}/.config/labwc/autostart
+            if [ -f "$cfg" ]; then append_once "$cfg" "$BIN &"
+            else say "  未发现 $cfg"; fi ;;
+        *)
+            say "  未识别的 wlroots 合成器，请在会话启动脚本里加一行: $BIN" ;;
+    esac
+}
+
+status() {
+    say "会话: ${XDG_CURRENT_DESKTOP:-未知}  类型: $(detect_desktop)"
+    say "二进制: $BIN $([ -x $BIN ] && echo 存在 || echo 缺失)"
+    if [ -f /etc/xdg/kwinrc ]; then
+        say "kwinrc 默认值: $(grep -h '^InputMethod=' /etc/xdg/kwinrc 2>/dev/null || echo 未设置)"
+    else
+        say "kwinrc 默认值: /etc/xdg/kwinrc 不存在"
+    fi
+    if [ -x "$BIN" ]; then "$BIN" --check || true; fi
+}
+
+usage() {
+    cat <<EOF
+用法: xime-setup [选项]
+
+  --auto                 自动检测当前桌合并完成接线（推荐）
+  --kde-default          只写 KDE/KWin 的系统级默认值
+  --remove-kde-default   撤销上面的修改
+  --status               显示当前状态并检查协议可用性
+  --dry-run              只打印将要做的修改
+  --quiet                安静模式
+EOF
+}
+
+MODE=auto
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --auto) MODE=auto ;;
+        --kde-default) MODE=kde ;;
+        --remove-kde-default) MODE=kde-remove ;;
+        --status) MODE=status ;;
+        --dry-run) DRY=1 ;;
+        --quiet) QUIET=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'xime-setup: 未知参数 %s\n' "$1" >&2; usage; exit 2 ;;
+    esac
+    shift
+done
+
+case "$MODE" in
+    status) status ;;
+    kde)
+        # KWINRC 是给打包 QA 用的测试钩子：指向临时文件时不需要 root 也能跑合并逻辑
+        if [ "$(id -u)" -eq 0 ] || [ -n "${KWINRC:-}" ]; then
+            kde_apply
+        elif command -v sudo >/dev/null 2>&1; then
+            exec sudo "$0" --kde-default
+        else
+            say "写入 /etc/xdg/kwinrc 需要 root，请用 root 执行: xime-setup --kde-default"
+            exit 1
+        fi
+        ;;
+    kde-remove) kde_remove ;;
+    auto)
+        kind=$(detect_desktop)
+        say "检测到桌面: $kind"
+        case "$kind" in
+            kde)
+                if [ "$(id -u)" -eq 0 ]; then kde_apply
+                else say "写入 /etc/xdg/kwinrc 需要 root：sudo xime-setup --kde-default"; fi ;;
+            gnome)
+                say "GNOME/Mutter 不实现 zwp_input_method_v2，本方案在 GNOME 上不可用。"
+                say "（这是合成器的限制，不是本程序的问题：GNOME 走的是 ibus 的 GTK/Qt 模块路径。）" ;;
+            sway|hyprland|labwc|wlroots) autostart_wlroots "$kind" ;;
+            *)
+                say "无法确定合成器类型。可手动在会话启动脚本里执行: $BIN"
+                say "KDE 用户请执行: sudo xime-setup --kde-default" ;;
+        esac
+        say "完成后重新登录（KDE）或重载合成器配置（sway/Hyprland）即生效。"
+        ;;
+esac

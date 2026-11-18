@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    # 进程正在运行时新会话会拿不到输入法实例，提示而不是粗暴 kill 其他用户的进程
+    :
+fi
+exit 0
