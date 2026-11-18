@@ -1,0 +1,71 @@
+#!/bin/sh
+# 把静态二进制组装成可 pacman -U 安装的 Arch 包（.pkg.tar.zst）。
+#
+# 与 build-deb.sh 对应：文件布局一致（/usr/bin/xime、/usr/bin/xime-setup、文档），
+# 安装/卸载钩子取自 packaging/xime.install（pacman 约定的 post_install/pre_remove），
+# 复制为包根部 .INSTALL，libalpm 按文件名自动识别执行。
+#
+# 为什么不用 makepkg：它内部要跑 rm，在受限环境（无 rm 沙箱）里跑不动；
+# 这里按 Arch 包格式手工组装 .PKGINFO / .MTREE / .INSTALL，pacman -U 可直接安装。
+# 不依赖 rm：暂存目录原地覆盖，可重复构建。
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+
+BIN=target/x86_64-unknown-linux-musl/release/xime
+STAGE=build/arch-pkg
+OUTDIR=dist
+
+[ -f "$BIN" ] || { echo "先执行 cargo build --release --target x86_64-unknown-linux-musl" >&2; exit 1; }
+command -v bsdtar >/dev/null 2>&1 || { echo "缺少 bsdtar（libarchive）" >&2; exit 1; }
+
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+ARCH=x86_64
+if command -v zstd >/dev/null 2>&1; then
+    EXT=zst
+else
+    EXT=gz   # pacman 同样接受 .pkg.tar.gz
+fi
+OUT="$OUTDIR/xime-$VERSION-1-$ARCH.pkg.tar.$EXT"
+
+mkdir -p "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" "$OUTDIR"
+
+install -m 755 "$BIN" "$STAGE/usr/bin/xime"
+install -m 755 packaging/xime-setup "$STAGE/usr/bin/xime-setup"
+install -m 644 README.md "$STAGE/usr/share/doc/xime/README.md"
+install -m 644 packaging/copyright "$STAGE/usr/share/doc/xime/copyright"
+install -m 644 packaging/xime.install "$STAGE/.INSTALL"
+
+SIZE=$(du -sk "$STAGE/usr" | cut -f1)
+DATE=$(date +%s)
+
+cat > "$STAGE/.PKGINFO" <<EOF
+pkgname = xime
+pkgbase = xime
+xdata = pkgtype=pkg
+pkgver = $VERSION-1
+pkgdesc = 单包装完即用的 Wayland 原生中文输入法（Rust 实现，musl 静态链接，支持简繁切换）
+url = https://localhost/xime
+builddate = $DATE
+packager = xime <xime@localhost>
+size = $SIZE
+arch = $ARCH
+license = MIT
+EOF
+
+# .MTREE：pacman 安装时核对文件清单与校验和（不含 .MTREE 自身）。
+# makepkg 生成的是 gzip 压缩流，libalpm 也按 gzip 读取，保持一致。
+( cd "$STAGE" && bsdtar --format=mtree --options='!all,md5,sha256,cksum' \
+      -cf - .PKGINFO .INSTALL usr ) | gzip -n > "$STAGE/.MTREE"
+
+# 组包：元数据在包根部，数据目录归 root，一次 tar 流过去压缩
+if [ "$EXT" = zst ]; then
+    ( cd "$STAGE" && tar --owner=0 --group=0 --numeric-owner -cf - \
+          .MTREE .PKGINFO .INSTALL usr ) | zstd -q -f -o "$OUT" -T0 --no-progress
+else
+    ( cd "$STAGE" && tar --owner=0 --group=0 --numeric-owner -cf - \
+          .MTREE .PKGINFO .INSTALL usr ) | gzip -n > "$OUT"
+fi
+
+echo "  $OUT  ($(du -h "$OUT" | cut -f1)，零 depends，pacman -U 安装)"

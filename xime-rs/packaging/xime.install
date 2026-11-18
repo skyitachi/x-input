@@ -1,0 +1,19 @@
+# pacman 安装/卸载钩子，等价于 deb 的 postinst / postrm。
+
+post_install() {
+    # 系统级默认值：让 KWin 下次启动会话时把 xime 当输入法拉起。
+    # 只写 /etc/xdg/kwinrc（系统默认层），不碰任何用户的私有配置。
+    if [ -x /usr/bin/xime-setup ]; then
+        /usr/bin/xime-setup --kde-default --quiet || true
+    fi
+    # sudo pacman -U 时把当前登录用户接上 sway/Hyprland/labwc 的启动项
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        su -s /bin/sh "$SUDO_USER" -c 'xime-setup --auto --quiet' || true
+    fi
+}
+
+pre_remove() {
+    if [ -x /usr/bin/xime-setup ]; then
+        /usr/bin/xime-setup --remove-kde-default --quiet || true
+    fi
+}

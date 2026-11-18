@@ -1,0 +1,19 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: xime
+
+Files: *
+License: MIT
+ 本包为 Rust 实现，随二进制静态链接了 musl libc（MIT）与 libc crate（MIT/Apache-2.0）。
+
+Files: data/dict.bin
+Comment: 由 tools/mkdict.py 从以下 MIT 数据源生成：
+ mozillazg/pinyin-data (c) 2016 mozillazg
+ mozillazg/phrase-pinyin-data (c) 2017 mozillazg
+ fxsjy/jieba (c) 2013 Sun Junyi
+ hermitdave/FrequencyWords (c) 2016 Hermit Dave
+License: MIT
+
+Files: data/atlas.bin
+Comment: 构建期由 tools/mkfont 从系统 CJK 字体烘焙的字形点阵，
+ 随字体自身许可证（常见为 SIL OFL 1.1）分发。
+License: SIL-OFL-1.1

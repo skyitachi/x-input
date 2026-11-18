@@ -1,0 +1,21 @@
+Package: xime
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Installed-Size: @SIZE@
+Maintainer: xime <xime@localhost>
+Description: 单包装完即用的 Wayland 原生中文输入法（Rust 实现）
+ 直接基于 zwp_input_method_v2 协议实现的输入法，不需要 fcitx/ibus 框架，
+ 不需要配置环境变量，不需要 GTK/Qt 输入法模块。安装后即可在 KDE Plasma(KWin)
+ 与所有 wlroots 合成器上使用。
+ .
+ 本包是纯 Rust 版本，采用 musl 静态链接：二进制不依赖任何动态库
+ （无 libc、无 libwayland、无 libxkbcommon、无 freetype），因此本包
+ 没有任何 Depends. Wayland 协议栈（含 wire 协议、XKB keymap 解析）
+ 与软光栅渲染都在 Rust 内实现。
+ .
+ 内置 14 万条拼音词条与 7500 字形，支持全拼、简拼（nh -> 你好）、
+ 尾部音节补全（nih -> 你好）与整句解码（jintiantianqihenhao -> 今天天气很好）。
+ 输出形态可切简体/繁体（--zh hant 或运行中 Ctrl+Shift+F），繁体按词级转换，
+ 候选不简繁混排；候选窗支持横排/竖排/网格与明暗两套配色。

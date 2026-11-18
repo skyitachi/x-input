@@ -1,0 +1,58 @@
+#!/bin/sh
+# 把静态二进制组装成可 dpkg -i 的单包 deb。
+#
+# 优先用 dpkg-deb；缺失时（如 Arch 系）用 ar + tar 手工组装，两者产物结构一致。
+# 注意：这里不依赖 rm，保证在受限环境里也能重复构建（原地覆盖）。
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+
+BIN=target/x86_64-unknown-linux-musl/release/xime
+STAGE=build/deb
+OUTDIR=dist
+
+[ -f "$BIN" ] || { echo "先执行 cargo build --release --target x86_64-unknown-linux-musl" >&2; exit 1; }
+
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+ARCH=amd64
+OUT="$OUTDIR/xime_${VERSION}_${ARCH}.deb"
+
+mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" "$OUTDIR"
+
+install -m 755 "$BIN" "$STAGE/usr/bin/xime"
+install -m 755 packaging/xime-setup "$STAGE/usr/bin/xime-setup"
+install -m 644 README.md "$STAGE/usr/share/doc/xime/README.md"
+install -m 644 packaging/copyright "$STAGE/usr/share/doc/xime/copyright"
+install -m 644 packaging/postinst "$STAGE/DEBIAN/postinst"
+install -m 644 packaging/prerm "$STAGE/DEBIAN/prerm"
+install -m 644 packaging/postrm "$STAGE/DEBIAN/postrm"
+chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/postrm"
+
+# 安装后占用（KB）
+SIZE=$(du -sk "$STAGE/usr" | cut -f1)
+
+sed -e "s/@VERSION@/$VERSION/" -e "s/@ARCH@/$ARCH/" -e "s/@SIZE@/$SIZE/" \
+    packaging/control > "$STAGE/DEBIAN/control"
+
+# md5sums 里列的是相对根目录的路径（usr/bin/xime），不带 ./ 前缀
+( cd "$STAGE" && find usr -type f -printf '%p\0' | sort -z | xargs -0 md5sum ) \
+    > "$STAGE/DEBIAN/md5sums"
+
+find "$STAGE" -type d -exec chmod 755 {} +
+chmod 644 "$STAGE/DEBIAN/control" "$STAGE/DEBIAN/md5sums"
+
+if command -v dpkg-deb >/dev/null 2>&1; then
+    dpkg-deb --root-owner-group -Zxz --build "$STAGE" "$OUT" >/dev/null
+else
+    # 手工组装：debian-binary / control.tar.gz / data.tar.gz，顺序不能变
+    mkdir -p build/deb-arch
+    printf '2.0\n' > build/deb-arch/debian-binary
+    ( cd "$STAGE/DEBIAN" && tar -czf "$root/build/deb-arch/control.tar.gz" \
+          --owner=0 --group=0 --numeric-owner . )
+    ( cd "$STAGE" && tar -czf "$root/build/deb-arch/data.tar.gz" \
+          --owner=0 --group=0 --numeric-owner ./usr )
+    ( cd build/deb-arch && ar rc "$root/$OUT" debian-binary control.tar.gz data.tar.gz )
+fi
+
+echo "  $OUT  ($(du -h "$OUT" | cut -f1)，安装后 ${SIZE}KB，无 Depends)"

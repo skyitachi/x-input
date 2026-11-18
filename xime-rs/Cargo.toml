@@ -1,0 +1,16 @@
+[package]
+name = "xime"
+version = "0.3.0"
+edition = "2021"
+description = "Wayland 原生中文输入法（纯 Rust，静态链接）"
+
+[dependencies]
+libc = "0.2"
+
+# 单包零依赖的前提是静态链接，这几项对体积影响很大
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+strip = true
+codegen-units = 1
