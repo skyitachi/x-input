@@ -1,0 +1,9 @@
+[package]
+name = "probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", default-features = false, features = ["client", "rust"] }
+wayland-scanner = "0.31"
