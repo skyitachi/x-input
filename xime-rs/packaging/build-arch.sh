@@ -45,7 +45,7 @@ pkgname = xime
 pkgbase = xime
 xdata = pkgtype=pkg
 pkgver = $VERSION-1
-pkgdesc = 单包装完即用的 Wayland 原生中文输入法（Rust 实现，musl 静态链接，支持简繁切换）
+pkgdesc = 单包装完即用的 Wayland 原生中文输入法（Rust 实现，musl 静态链接，支持简繁与英文补全）
 url = https://localhost/xime
 builddate = $DATE
 packager = xime <xime@localhost>

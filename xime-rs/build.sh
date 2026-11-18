@@ -9,11 +9,11 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "缺少 $1" >&2; exit 1; }; }
 need cargo
 need python3
 
-printf '== 1/4 数据（词库 + 简繁表 + 字形）==\n'
-if [ ! -s data/dict.bin ] || [ ! -s data/zh.bin ] || [ ! -s data/atlas.bin ]; then
+printf '== 1/4 数据（词库 + 简繁表 + 英文词表 + 字形）==\n'
+if [ ! -s data/dict.bin ] || [ ! -s data/zh.bin ] || [ ! -s data/en.bin ] || [ ! -s data/atlas.bin ]; then
     sh scripts/gen-data.sh
 else
-    echo "  复用 data/dict.bin、data/zh.bin 与 data/atlas.bin"
+    echo "  复用 data/dict.bin、data/zh.bin、data/en.bin 与 data/atlas.bin"
 fi
 
 printf '== 2/4 静态编译（%s）==\n' "$TARGET"

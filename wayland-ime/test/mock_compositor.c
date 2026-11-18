@@ -471,10 +471,89 @@ static void send_key(uint32_t code, uint32_t state)
     zwp_input_method_keyboard_grab_v2_send_key(T.grab, 0, 100, code, state);
 }
 
+/* 真实合成器在修饰键按下/松开后会补一个 modifiers 事件；只发 key 事件的话，
+ * 输入法算出来的 keysym 永远是小写，Shift 组合测试会假失败。 */
+static void send_modifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group)
+{
+    zwp_input_method_keyboard_grab_v2_send_modifiers(T.grab, 101, depressed, latched, locked, group);
+}
+
 static void send_char(uint32_t evdev)
 {
     send_key(evdev, WL_KEYBOARD_KEY_STATE_PRESSED);
     send_key(evdev, WL_KEYBOARD_KEY_STATE_RELEASED);
+}
+
+/* ---- 可替换的按键序列 ------------------------------------------------------
+ * 默认场景固定是「nihao + 空格 -> 你好」。设 MOCK_KEYS 可以换成别的序列，
+ * 用来测同一套协议下的其它输入路径（例如英文模式的前缀补全）：
+ *
+ *   MOCK_KEYS="hel space" MOCK_EXPECT="help" XIME_ARGS="--en" ./mock_compositor
+ *
+ * 写法：小写字母＝该键，大写字母＝Shift+该键，另支持 space / enter / esc / shift / backspace。
+ * MOCK_EXPECT 是期望的 commit_string，默认「你好」。
+ */
+static uint32_t g_seq[64];
+static uint8_t g_seq_shift[64];
+static size_t g_seq_n;
+static int g_custom;
+static int g_need_esc;
+static const char *g_expect = "你好";
+
+static uint32_t letter_code(char ch)
+{
+    static const uint32_t tab[26] = {
+        KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H, KEY_I,
+        KEY_J, KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P, KEY_Q, KEY_R,
+        KEY_S, KEY_T, KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z,
+    };
+    if (ch >= 'a' && ch <= 'z')
+        return tab[ch - 'a'];
+    if (ch >= 'A' && ch <= 'Z')
+        return tab[ch - 'A'];
+    return 0;
+}
+
+static void push_key(uint32_t code, int shift)
+{
+    if (g_seq_n >= sizeof(g_seq) / sizeof(g_seq[0]))
+        return;
+    g_seq[g_seq_n] = code;
+    g_seq_shift[g_seq_n] = (uint8_t)shift;
+    g_seq_n++;
+}
+
+static void parse_keys(const char *s)
+{
+    char buf[512];
+    char *tok;
+
+    snprintf(buf, sizeof(buf), "%s", s);
+    for (tok = strtok(buf, " ,"); tok; tok = strtok(NULL, " ,")) {
+        if (!strcmp(tok, "space"))
+            push_key(KEY_SPACE, 0);
+        else if (!strcmp(tok, "enter"))
+            push_key(KEY_ENTER, 0);
+        else if (!strcmp(tok, "backspace"))
+            push_key(KEY_BACKSPACE, 0);
+        else if (!strcmp(tok, "esc")) {
+            push_key(KEY_ESC, 0);
+            g_need_esc = 1;
+        } else if (!strcmp(tok, "shift"))
+            push_key(KEY_LEFTSHIFT, 0);
+        else {
+            /* 普通 token 逐字符展开：'hel' 就是 h、e、l 三个键，
+             * 连续写一串字母比写 'h e l' 更接近真实打字。 */
+            const char *p;
+
+            for (p = tok; *p; p++) {
+                uint32_t c = letter_code(*p);
+
+                if (c)
+                    push_key(c, *p >= 'A' && *p <= 'Z');
+            }
+        }
+    }
 }
 
 static void step(void)
@@ -495,17 +574,33 @@ static void step(void)
         return;
     }
     if (T.sent_keymap && !T.sent_keys) {
-        uint32_t seq[] = {KEY_N, KEY_I, KEY_H, KEY_A, KEY_O, KEY_SPACE};
         size_t i;
 
         T.sent_keys = 1;
-        printf("-> 键入 n i h a o space\n");
-        for (i = 0; i < sizeof(seq) / sizeof(seq[0]); i++)
-            send_char(seq[i]);
+        if (g_custom) {
+            printf("-> 键入自定义序列（%zu 键）\n", g_seq_n);
+            for (i = 0; i < g_seq_n; i++) {
+                if (g_seq_shift[i]) {
+                    send_key(KEY_LEFTSHIFT, WL_KEYBOARD_KEY_STATE_PRESSED);
+                    send_modifiers(1, 0, 0, 0);
+                }
+                send_char(g_seq[i]);
+                if (g_seq_shift[i]) {
+                    send_key(KEY_LEFTSHIFT, WL_KEYBOARD_KEY_STATE_RELEASED);
+                    send_modifiers(0, 0, 0, 0);
+                }
+            }
+        } else {
+            uint32_t seq[] = {KEY_N, KEY_I, KEY_H, KEY_A, KEY_O, KEY_SPACE};
+
+            printf("-> 键入 n i h a o space\n");
+            for (i = 0; i < sizeof(seq) / sizeof(seq[0]); i++)
+                send_char(seq[i]);
+        }
         wl_display_flush_clients(T.display);
         return;
     }
-    if (T.sent_keys && !T.sent_esc && T.committed[0]) {
+    if (T.sent_keys && !T.sent_esc && T.committed[0] && (g_need_esc || !g_custom)) {
         T.sent_esc = 1;
         printf("-> 输入串已清空，发送 Esc（应被回注给应用）\n");
         send_char(KEY_ESC);
@@ -543,14 +638,39 @@ int main(void)
     loop = wl_display_get_event_loop(T.display);
 
     /* XIME_CLIENT 可指定被测客户端；设为 "none" 时只起服务端，供外部进程连接 */
+    const char *keys = getenv("MOCK_KEYS");
+    const char *exp = getenv("MOCK_EXPECT");
+
+    if (keys && *keys) {
+        g_custom = 1;
+        parse_keys(keys);
+    }
+    if (exp && *exp)
+        g_expect = exp;
+
     const char *client = getenv("XIME_CLIENT");
     if (!client)
         client = "./build/xime";
     if (strcmp(client, "none") != 0) {
         child = fork();
         if (child == 0) {
+            char *argv[12];
+            char extra[256];
+            const char *ea = getenv("XIME_ARGS");
+            int argc = 0;
+
             setenv("WAYLAND_DISPLAY", "xime-test", 1);
-            execl(client, client, "--verbose", (char *)NULL);
+            argv[argc++] = (char *)client;
+            argv[argc++] = (char *)"--verbose";
+            if (ea) {
+                char *tok;
+
+                snprintf(extra, sizeof(extra), "%s", ea);
+                for (tok = strtok(extra, " "); tok && argc < 11; tok = strtok(NULL, " "))
+                    argv[argc++] = tok;
+            }
+            argv[argc] = NULL;
+            execv(client, argv);
             _exit(127);
         }
     }
@@ -582,11 +702,11 @@ int main(void)
     } else {
         printf("ok   preedit 持续更新（%d 次，最后 \"%s\"）\n", T.preedit_events, T.last_preedit);
     }
-    if (strcmp(T.committed, "你好") != 0) {
-        printf("FAIL 提交内容应为 \"你好\"，实际 \"%s\"\n", T.committed);
+    if (strcmp(T.committed, g_expect) != 0) {
+        printf("FAIL 提交内容应为 \"%s\"，实际 \"%s\"\n", g_expect, T.committed);
         ok = 0;
     } else {
-        printf("ok   空格选中首选并提交 \"你好\"\n");
+        printf("ok   空格选中首选并提交 \"%s\"\n", g_expect);
     }
     if (T.commit_count < 3) {
         printf("FAIL commit 次数过少（%d）\n", T.commit_count);
@@ -600,7 +720,9 @@ int main(void)
     } else {
         printf("ok   虚拟键盘已同步 keymap\n");
     }
-    if (!T.saw_vk_key || T.vk_key_code != KEY_ESC) {
+    if (!g_need_esc && g_custom) {
+        printf("--   自定义序列未含 esc，跳过回注校验\n");
+    } else if (!T.saw_vk_key || T.vk_key_code != KEY_ESC) {
         printf("FAIL Esc 未被回注给应用（code=%u）\n", T.vk_key_code);
         ok = 0;
     } else {

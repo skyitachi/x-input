@@ -1,4 +1,5 @@
 mod dict;
+mod en;
 mod engine;
 mod font;
 mod keymap;
@@ -55,6 +56,12 @@ struct Xime {
     group: u32,
     consumed: Vec<bool>,
     chinese: bool,
+    /// 英文模式的组字状态（前缀补全）
+    en: en::EnEngine,
+    /// 英文模式下完全透传按键，不做补全（回归「能用就行」的做法）
+    en_passthrough: bool,
+    /// Shift 按下但还没松开：松开时才决定是切换中英还是输入大写字母
+    shift_pending: bool,
     inline_cands: bool,
     verbose: bool,
     style: popup::Style,
@@ -69,6 +76,8 @@ impl Xime {
         verbose: bool,
         style: popup::Style,
         variant: zh::Variant,
+        start_english: bool,
+        en_passthrough: bool,
     ) -> Option<Xime> {
         let conn = match Conn::connect() {
             Ok(c) => c,
@@ -105,7 +114,10 @@ impl Xime {
             mods_locked: 0,
             group: 0,
             consumed: vec![false; CONSUMED_MAX],
-            chinese: true,
+            chinese: !start_english,
+            en: en::EnEngine::new(),
+            en_passthrough,
+            shift_pending: false,
             inline_cands,
             verbose,
             style,
@@ -345,6 +357,12 @@ impl Xime {
         if !pressed {
             if idx < CONSUMED_MAX && self.consumed[idx] {
                 self.consumed[idx] = false;
+                // Shift 按下又原样松开、中间没敲别的键：这时才确定是「切换中英」。
+                // 不能在按下瞬间就切，否则 Shift+A 想打大写字母会先被切成中文。
+                if is_shift_key(key) && self.shift_pending {
+                    self.shift_pending = false;
+                    self.toggle_language()?;
+                }
             } else {
                 self.forward_key(time, key, state)?;
             }
@@ -355,16 +373,15 @@ impl Xime {
             & (keymap::MASK_CONTROL | keymap::MASK_MOD1 | keymap::MASK_MOD4)
             != 0;
 
-        // Shift 单独按下：中英切换
-        if (sym == keymap::KS_SHIFT_L || sym == keymap::KS_SHIFT_R) && !has_cmd {
-            self.commit_selection()?;
-            self.chinese = !self.chinese;
+        // Shift 按下：先挂起，等松开时才知道是修饰键还是切换键
+        if is_shift_key(key) && !has_cmd {
+            self.shift_pending = true;
             if idx < CONSUMED_MAX {
                 self.consumed[idx] = true;
             }
-            self.log(if self.chinese { "切换到中文模式" } else { "切换到英文模式" });
             return Ok(());
         }
+        self.shift_pending = false;
 
         // Ctrl+Shift+F：简体 / 繁体切换（与 fcitx5 同组按键）。
         // 用按键切换而不是命令行参数，是因为形态属于「随手改」的输出偏好：
@@ -380,9 +397,14 @@ impl Xime {
             return Ok(());
         }
 
-        if has_cmd || !self.chinese {
+        if has_cmd {
             self.forward_key(time, key, state)?;
             return Ok(());
+        }
+
+        // 英文模式：独立的按键处理（前缀补全），与拼音引擎不共用
+        if !self.chinese {
+            return self.on_key_en(time, key, state, sym);
         }
 
         // 数字选词
@@ -479,8 +501,115 @@ impl Xime {
         Ok(())
     }
 
+    /// 英文模式的按键处理：字母进缓冲、候选实时刷新
+    ///
+    /// 与中文共用「缓冲 + 候选窗 + 空格上屏」这套流程，所以数字选词、退格、Esc
+    /// 的行为和中文完全一致，用户不用学两套。差别只在候选来源：那边是词网格解码，
+    /// 这边是前缀补全。
+    fn on_key_en(
+        &mut self,
+        time: u32,
+        key: u32,
+        state: u32,
+        sym: u32,
+    ) -> std::io::Result<()> {
+        let idx = key as usize;
+        let cap = self.style.max_items();
+
+        // 完全透传模式：不组字、不弹候选，字母直接进应用
+        if self.en_passthrough {
+            self.forward_key(time, key, state)?;
+            return Ok(());
+        }
+
+        match sym {
+            keymap::KS_BACKSPACE if self.en.active() => {
+                self.en.backspace(cap);
+                self.refresh()?;
+                self.consume_key(idx);
+            }
+            x if x == b' ' as u32 && self.en.active() => {
+                // 空格上屏首选；缓冲为空时是真空格，交给应用
+                self.commit_selection()?;
+                self.consume_key(idx);
+            }
+            keymap::KS_RETURN if self.en.active() => {
+                // 回车要的是「我刚敲的字母」，不是补全
+                let t = self.en.raw();
+                self.commit_text(&t)?;
+                self.consume_key(idx);
+            }
+            keymap::KS_ESCAPE if self.en.active() => {
+                self.en.reset();
+                self.refresh()?;
+                self.consume_key(idx);
+            }
+            x if (b'1' as u32..=b'9' as u32).contains(&x) && self.en.active() => {
+                let pick = (x - b'1' as u32) as usize;
+                let text = self
+                    .en
+                    .cands
+                    .get(pick)
+                    .cloned()
+                    .unwrap_or_else(|| self.en.raw());
+                self.commit_text(&text)?;
+                self.consume_key(idx);
+            }
+            _ => {
+                if let Some(ch) = letter_keep_case(sym) {
+                    self.en.set_caps(self.caps_on());
+                    self.en.push_char(ch, cap);
+                    self.refresh()?;
+                    self.consume_key(idx);
+                } else {
+                    // 标点、符号、方向键：英文态不该被输入法改写，直接透传
+                    self.forward_key(time, key, state)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 标记这个键已被输入法吃掉，松开时不再转发
+    fn consume_key(&mut self, idx: usize) {
+        if idx < CONSUMED_MAX {
+            self.consumed[idx] = true;
+        }
+    }
+
+    /// Caps Lock 是否生效（锁定态优先，某些合成器只报 depressed）
+    fn caps_on(&self) -> bool {
+        (self.mods_locked | self.mods_depressed) & keymap::MASK_LOCK != 0
+    }
+
+    /// 中英切换：先把当前未上屏的内容定下来，再清空两边的组字状态
+    fn toggle_language(&mut self) -> std::io::Result<()> {
+        self.commit_selection()?;
+        self.chinese = !self.chinese;
+        self.engine.reset();
+        self.en.reset();
+        self.popup_hide()?;
+        self.log(if self.chinese {
+            "切换到中文模式"
+        } else if self.en_passthrough {
+            "切换到英文模式（直通）"
+        } else {
+            "切换到英文模式（前缀补全）"
+        });
+        Ok(())
+    }
+
     /// 提交首选候选；没有候选但有输入串时提交原始拼音
     fn commit_selection(&mut self) -> std::io::Result<()> {
+        if !self.chinese {
+            if let Some(s) = self.en.cands.first().cloned() {
+                return self.commit_text(&s);
+            }
+            if self.en.active() {
+                return self.commit_text(&self.en.raw());
+            }
+            return Ok(());
+        }
         if let Some(s) = self.engine.cands.first().cloned() {
             return self.commit_text(&s);
         }
@@ -501,6 +630,7 @@ impl Xime {
         proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
         proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
         self.engine.reset();
+        self.en.reset();
         self.popup_hide()?;
         Ok(())
     }
@@ -508,6 +638,9 @@ impl Xime {
     fn refresh(&mut self) -> std::io::Result<()> {
         if self.im == 0 {
             return Ok(());
+        }
+        if !self.chinese {
+            return self.refresh_en();
         }
         if self.inline_cands {
             let s = self.engine.inline_preedit();
@@ -526,7 +659,36 @@ impl Xime {
         if cands.is_empty() {
             self.popup_hide()?;
         } else {
-            self.popup_update(&cands)?;
+            self.popup_update(&cands, popup::Mode::Zh)?;
+        }
+        Ok(())
+    }
+
+    /// 英文态的 preedit 与候选刷新
+    ///
+    /// preedit 显示用户敲的字母本身（不是补全结果）——补全只是建议，
+    /// 不该在组字区里冒充「你已经输入了这个词」。
+    fn refresh_en(&mut self) -> std::io::Result<()> {
+        let p = self.en.preedit().to_string();
+        if p.is_empty() {
+            if self.im != 0 {
+                proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
+                proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+            }
+            return self.popup_hide();
+        }
+        let len = p.len() as i32;
+        proto::im_set_preedit(&mut self.conn, self.im, &p, len, len)?;
+        proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+
+        let cands = self.en.cands.clone();
+        if cands.is_empty() {
+            self.popup_hide()?;
+        } else if self.inline_cands {
+            // 内联模式复用中文那套：候选塞进 preedit
+            self.popup_hide()?;
+        } else {
+            self.popup_update(&cands, popup::Mode::En)?;
         }
         Ok(())
     }
@@ -583,7 +745,7 @@ impl Xime {
         Ok(())
     }
 
-    fn popup_update(&mut self, cands: &[String]) -> std::io::Result<()> {
+    fn popup_update(&mut self, cands: &[String], mode: popup::Mode) -> std::io::Result<()> {
         if self.popup_surf == 0 {
             return Ok(());
         }
@@ -601,7 +763,7 @@ impl Xime {
         self.ensure_buffer(w, h)?;
 
         let mut c = Canvas::new(w, h);
-        popup::paint(&mut c, &shown, &self.style);
+        popup::paint(&mut c, &shown, &self.style, mode);
         if let Some(b) = &mut self.buf {
             b.shm.upload(&c.px);
         }
@@ -694,6 +856,26 @@ fn ascii_letter(sym: u32) -> Option<char> {
     None
 }
 
+/// 字母 keysym → 字符，**保留大小写**（英文模式用）
+///
+/// 拼音不需要大小写，但英文的首字母大写、Caps Lock 全大写都得靠它，
+/// 所以这里不能复用 `ascii_letter` 的降级逻辑。
+fn letter_keep_case(sym: u32) -> Option<char> {
+    if (b'a' as u32..=b'z' as u32).contains(&sym) || (b'A' as u32..=b'Z' as u32).contains(&sym) {
+        char::from_u32(sym)
+    } else {
+        None
+    }
+}
+
+/// Shift 的 evdev keycode（左 42 / 右 54）
+///
+/// 按松开事件判断中英切换时必须用 keycode 而不是 keysym：松开 Shift 的那一刻
+/// 修饰键状态已经改了，keysym 会跟着变，而 keycode 是稳定的。
+fn is_shift_key(key: u32) -> bool {
+    key == 42 || key == 54
+}
+
 /// keysym → 中文标点
 fn punct_of(sym: u32) -> Option<&'static str> {
     Some(match sym {
@@ -726,7 +908,7 @@ fn is_variant_toggle(sym: u32, mods: u32) -> bool {
 }
 
 fn usage() {
-    println!("xime {VERSION} — Wayland 原生中文输入法");
+    println!("xime {VERSION} — Wayland 原生的中文输入法（含英文补全）");
     println!();
     println!("用法: xime [选项]");
     println!("  --verbose           打印协议与按键处理细节");
@@ -735,6 +917,8 @@ fn usage() {
     println!("  --popup-cols N      网格形态的列数（默认 3）");
     println!("  --theme NAME        候选窗配色: light(默认) | dark");
     println!("  --zh VARIANT        输出形态: hans(默认,简体) | hant(繁体)；运行中 Ctrl+Shift+F 切换");
+    println!("  --en                启动即英文模式（前缀补全 + 候选窗）");
+    println!("  --en-passthrough    英文模式不做补全，按键直接进应用");
     println!("  --check             诊断：检查协议可用性与接线状态");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
     println!("  --render-test PATH [拼音]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
@@ -802,6 +986,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let style = parse_style(&args);
     let variant = parse_variant(&args);
+    let english = args.iter().any(|a| a == "--en");
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         usage();
@@ -822,14 +1007,14 @@ fn main() {
     }
     if let Some(i) = args.iter().position(|a| a == "--query") {
         if let Some(q) = args.get(i + 1) {
-            query(q, variant);
+            query(q, variant, english);
             return;
         }
     }
     if let Some(i) = args.iter().position(|a| a == "--render-test") {
         let path = args.get(i + 1).map(|s| s.as_str()).unwrap_or("/tmp/popup.bmp");
         let input = args.get(i + 2).map(|s| s.as_str()).unwrap_or("nihao");
-        render_test(path, input, &style, variant);
+        render_test(path, input, &style, variant, english);
         return;
     }
     if args.iter().any(|a| a == "--probe") {
@@ -844,7 +1029,16 @@ fn main() {
     let inline_cands = args.iter().any(|a| a == "--inline-candidates");
     let verbose = args.iter().any(|a| a == "--verbose");
 
-    let mut x = match Xime::new(inline_cands, verbose, style, variant) {
+    let en_passthrough = args.iter().any(|a| a == "--en-passthrough");
+
+    let mut x = match Xime::new(
+        inline_cands,
+        verbose,
+        style,
+        variant,
+        english,
+        en_passthrough,
+    ) {
         Some(x) => x,
         None => std::process::exit(1),
     };
@@ -943,6 +1137,7 @@ fn check(variant: zh::Variant) {
 
     println!();
     println!("内置词条：{} 条", dict::word_count());
+    println!("英文词表：{} 词（前缀补全，Shift 切换中英）", en::word_count());
     println!("字形数量：{} 个", font::Atlas::get().count());
     let (nc, np, nw) = zh::stats();
     println!("简繁数据：{nc} 个单字映射 / {np} 条词级例外 / {nw} 条词表（{} 条繁体形词条）",
@@ -1014,14 +1209,24 @@ fn probe_seat(
 }
 
 /// 把候选窗渲染成 BMP，用于肉眼校验字形、布局与配色
-fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Variant) {
-    dict::init();
-    let mut e = Engine::new();
-    e.set_variant(variant);
-    for c in input.chars() {
-        e.push_char(c);
-    }
-    let shown: Vec<String> = e.cands.iter().take(style.max_items()).cloned().collect();
+fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Variant, english: bool) {
+    let (cands, mode, label) = if english {
+        let mut e = en::EnEngine::new();
+        for ch in input.chars() {
+            e.push_char(ch, style.max_items());
+        }
+        (e.cands.clone(), popup::Mode::En, format!("英文/{}", e.case_mode_label()))
+    } else {
+        dict::init();
+        let mut e = Engine::new();
+        e.set_variant(variant);
+        for c in input.chars() {
+            e.push_char(c);
+        }
+        (e.cands.clone(), popup::Mode::Zh, variant.label().to_string())
+    };
+
+    let shown: Vec<String> = cands.iter().take(style.max_items()).cloned().collect();
     if shown.is_empty() {
         eprintln!("无候选");
         std::process::exit(1);
@@ -1029,14 +1234,14 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
     let probe = Canvas::new(1, 1);
     let (w, h) = popup::measure(&probe, &shown, style);
     let mut c = Canvas::new(w, h);
-    popup::paint(&mut c, &shown, style);
+    popup::paint(&mut c, &shown, style, mode);
     match c.write_bmp(path) {
         Ok(()) => println!(
-            "已写出 {path}  {w}x{h}  形态 {}（{} 列）  配色 {}  字形 {}  候选 {} 条",
+            "已写出 {path}  {w}x{h}  形态 {}（{} 列）  配色 {}  字体 {}  候选 {} 条",
             style.layout.name(),
             style.cols,
             if style.dark { "dark" } else { "light" },
-            variant.label(),
+            label,
             shown.len()
         ),
         Err(e) => eprintln!("写 BMP 失败: {e}"),
@@ -1149,7 +1354,18 @@ fn keymap_test(path: &str) {
 }
 
 /// 打印某拼音串的候选与解码代价
-fn query(input: &str, variant: zh::Variant) {
+fn query(input: &str, variant: zh::Variant, english: bool) {
+    if english {
+        let mut e = en::EnEngine::new();
+        for ch in input.chars() {
+            e.push_char(ch, 9);
+        }
+        println!("前缀: {}  形态: 英文/{}", e.preedit(), e.case_mode_label());
+        for (i, c) in e.cands.iter().enumerate() {
+            println!("{}. {c}", i + 1);
+        }
+        return;
+    }
     dict::init();
     let mut e = Engine::new();
     e.set_variant(variant);
@@ -1226,5 +1442,26 @@ mod tests {
         // 别把别的键卷进来
         assert!(!is_variant_toggle(b'g' as u32, both));
         assert!(!is_variant_toggle(keymap::KS_SHIFT_L, both));
+    }
+
+    #[test]
+    fn shift键码判定() {
+        // evdev：左 Shift 42、右 Shift 54
+        assert!(is_shift_key(42));
+        assert!(is_shift_key(54));
+        // 字母 a 是 38，别把普通键当切换键
+        assert!(!is_shift_key(38));
+        assert!(!is_shift_key(0));
+    }
+
+    #[test]
+    fn 英文字母保留大小写_拼音统一小写() {
+        assert_eq!(letter_keep_case(b'a' as u32), Some('a'));
+        assert_eq!(letter_keep_case(b'A' as u32), Some('A'), "英文要大写就得上大写");
+        assert_eq!(letter_keep_case(b'1' as u32), None);
+        assert_eq!(letter_keep_case(b' ' as u32), None);
+        // 拼音不需要大小写，走另一条路径
+        assert_eq!(ascii_letter(b'A' as u32), Some('a'));
+        assert_eq!(ascii_letter(b'a' as u32), Some('a'));
     }
 }

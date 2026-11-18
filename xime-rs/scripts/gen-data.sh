@@ -22,6 +22,10 @@ python3 "$src/tools/mkdict.py" --bin "$here/data/dict.bin"
 echo "  简繁 -> data/zh.bin"
 python3 "$here/scripts/gen-zh.py"
 
+# 英文词表：把 data/en-words.txt（按词频降序）转成字母序索引
+echo "  英文 -> data/en.bin"
+python3 "$here/scripts/gen-en.py"
+
 font=$(sh "$src/scripts/find-font.sh") || {
     echo "系统里找不到含汉字的字体，无法烘焙字形" >&2
     exit 1

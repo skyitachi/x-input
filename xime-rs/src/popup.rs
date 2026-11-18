@@ -50,6 +50,16 @@ pub struct Style {
     pub dark: bool,
 }
 
+/// 输入模式：只影响强调色，用来一眼分清中英态
+///
+/// 没加文字标记也没改布局——候选内容本身（汉字 vs 英文单词）已经能区分，
+/// 这里只是把选中块换个色，零尺寸风险。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Zh,
+    En,
+}
+
 impl Default for Style {
     fn default() -> Self {
         Style { layout: Layout::Horizontal, cols: 3, dark: false }
@@ -146,8 +156,16 @@ pub fn measure(c: &Canvas, cands: &[String], style: &Style) -> (i32, i32) {
 }
 
 /// 把候选窗画进画布；画布尺寸必须与 measure 的结果一致
-pub fn paint(c: &mut Canvas, cands: &[String], style: &Style) {
-    let col = colors(style.dark);
+pub fn paint(c: &mut Canvas, cands: &[String], style: &Style, mode: Mode) {
+    let mut col = colors(style.dark);
+    if mode == Mode::En {
+        // 青色：英文态标识。只换选中块颜色，不动任何尺寸计算
+        col.accent = if style.dark {
+            argb(255, 20, 160, 133)
+        } else {
+            argb(255, 13, 148, 136)
+        };
+    }
     let lh = c.line_height();
     c.clear(0);
 
@@ -257,11 +275,28 @@ mod tests {
                 let probe = Canvas::new(1, 1);
                 let (w, h) = measure(&probe, &v, &s);
                 let mut c = Canvas::new(w, h);
-                paint(&mut c, &v, &s);
+                paint(&mut c, &v, &s, Mode::Zh);
                 // 底板上应当已经有像素（bg 不是全透明）
                 assert!(c.px.iter().any(|p| *p != 0), "{layout:?} 画了空画布");
             }
         }
+    }
+
+    #[test]
+    fn 英文态强调色不同但尺寸一致() {
+        let s = Style::default();
+        let v = vec!["help".to_string(), "held".to_string(), "hello".to_string()];
+        let probe = Canvas::new(1, 1);
+        let (w, h) = measure(&probe, &v, &s);
+
+        let mut zh = Canvas::new(w, h);
+        let mut en = Canvas::new(w, h);
+        paint(&mut zh, &v, &s, Mode::Zh);
+        paint(&mut en, &v, &s, Mode::En);
+
+        assert_ne!(zh.px, en.px, "英文态应换强调色，否则分不出中英");
+        // 模式只影响颜色，绝不能影响布局——否则切换时候选窗会跳位
+        assert_eq!((w, h), measure(&probe, &v, &s));
     }
 
     #[test]

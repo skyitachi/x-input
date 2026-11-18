@@ -1,6 +1,6 @@
 # xime（Rust 版）
 
-Wayland 原生的中文拼音输入法，纯 Rust 实现，**单个静态二进制、零动态依赖、零系统接线**（不注入任何进程、不需要环境变量；输入法自身的配置界面是另一回事，见下）。
+Wayland 原生的中文拼音输入法（含英文前缀补全），纯 Rust 实现，**单个静态二进制、零动态依赖、零系统接线**（不注入任何进程、不需要环境变量；输入法自身的配置界面是另一回事，见下）。
 
 同一方案先前有一个 C 版本。Rust 版不是把 C 代码翻译一遍，而是换了两个关键决策，
 换来一项 C 版做不到的性质：**安装包没有 Depends**。
@@ -44,6 +44,9 @@ $ ldd xime
 ---
 
 ## 二、能力边界
+
+中英两种输入走的是同一条 `zwp_input_method_v2` 链路，切换只改输入法内部状态，
+所以下表对两种模式都成立。
 
 | 合成器 | 支持 | 说明 |
 |---|---|---|
@@ -109,10 +112,13 @@ src/
 ├── render.rs   软光栅：圆角矩形 + 字形 alpha 叠加 + BMP 输出
 ├── font.rs     字形图集解析
 ├── popup.rs    候选条布局与配色
+├── en.rs       英文前缀补全：字母序二分 + 词频排序
 ├── zh.rs       简繁转换：单字映射 + 词级例外 + 词条可见性
 └── shm.rs      memfd + mmap 提供 wl_shm 像素内存
 data/
 ├── dict.bin    14.4 万词条（4.3MB）
+├── en.bin      1 万英文词（133KB）
+├── en-words.txt  英文原始词表（按词频降序，75KB）
 ├── zh.bin      简繁转换表（97KB）
 ├── atlas.bin   7536 字形 8bpp 图集（2.4MB）
 └── hant-chars.txt  繁体字符集（供 mkfont 烘焙字形）
@@ -211,15 +217,28 @@ exact_into: lower_bound(p) → 长度 != len(p) 就返回
 
 ```
 $ cargo test --release
-running 13 tests ... test result: ok. 13 passed; 0 failed
+running 40 tests ... test result: ok. 40 passed; 0 failed
 ```
 
 覆盖：常用词、整句解码、简拼、尾部补全、多音字（银行/重庆）、ü 写作 v、
-码位直输（`u4f60 → 你`）、退格、候选去重、长度上限、状态重置。
+码位直输（`u4f60 → 你`）、退格、候选去重、长度上限、状态重置；
+简繁（简体不混繁体、繁体按词转换、切换即时重算）；
+英文（前缀补全按词频排序、大小写形态、候选上限、原样可上屏）；
+候选窗（三种形态尺寸、列数约束、英文态配色与尺寸不变）；
+按键判定（`Ctrl+Shift+F`、Shift keycode、字母大小写保真）。
 
 **协议级端到端测试**用的是 C 版那套假合成器（`../wayland-ime/test/mock_compositor.c`，
-用 libwayland-server 实现 compositor/shm/seat/input-method/virtual-keyboard），
-只为 Rust 版加了一个 `XIME_CLIENT` 环境变量来指定被测二进制：
+用 libwayland-server 实现 compositor/shm/seat/input-method/virtual-keyboard）。
+它支持用环境变量替换按键序列，所以同一条链路能分别验证中文与英文：
+
+| 变量 | 作用 |
+|---|---|
+| `XIME_CLIENT` | 被测二进制（默认 `./build/xime`） |
+| `XIME_ARGS` | 传给它的参数，例如 `--en` |
+| `MOCK_KEYS` | 按键序列：小写字母＝该键，大写＝Shift+该键，另有 `space`/`enter`/`esc`/`backspace`/`shift` |
+| `MOCK_EXPECT` | 期望的 `commit_string`，默认「你好」 |
+
+默认场景（中文）：
 
 ```
 $ XIME_CLIENT=./xime ../wayland-ime/build/mock_compositor
@@ -234,6 +253,21 @@ ok   虚拟键盘已同步 keymap
 ok   非消费按键（Esc）已通过虚拟键盘回注
 全部通过
 ```
+
+英文链路（前缀补全 + 空格上屏 + 大小写）：
+
+```
+$ MOCK_KEYS="hel space" MOCK_EXPECT="help" XIME_ARGS=--en \
+  XIME_CLIENT=./xime ../wayland-ime/build/mock_compositor
+ok   空格选中首选并提交 "help"
+全部通过
+
+$ MOCK_KEYS="Hel space" MOCK_EXPECT="Help" ...      # Shift+首字母 -> 首字母大写
+$ MOCK_KEYS="shift hel space" MOCK_EXPECT="help" ... # 单按 Shift 切英文
+```
+
+最后一条同时验证了 Shift 的延迟切换：`Hel` 那次 Shift 一直按着，所以没有触发中英切换，
+否则打出来的会是中文候选而不是 `Help`。
 
 **渲染一致性**：`--render-test` 产出的候选条与 C 版**逐字节相同**
 （`cmp` 无差异），说明软光栅、字形取样、混合、圆角与布局完全对齐。
@@ -273,6 +307,7 @@ xime-setup --status
 xime --check                      # 协议可用性 + 词库/字形/简繁数据统计
 xime --query jintiantianqihenhao  # 打印候选与解码代价
 xime --query toufa --zh hant      # 繁体形态下看候选（头发 -> 頭髮）
+xime --query hel --en             # 英文前缀补全（hel -> help/held/hello…）
 xime --bench                      # 解码性能 + 词库查询微基准
 xime --keymap-test /tmp/keymap.txt # 抽查 keymap 解析结果
 xime --render-test out.bmp nihao  # 候选条渲染成 BMP
@@ -305,6 +340,47 @@ xime --render-test out.bmp nihao --popup grid   # 任意形态预览成图
 （形态 + 列数 + 明暗），`measure` 和 `paint` 各自按形态分支，主循环只把
 `Style` 传下去。后续接配置界面（`~/.config/xime/config.toml`）时，
 这份 `Style` 就是唯一要落盘的东西。
+
+### 英文（前缀补全）
+
+Shift 单按切中英。英文模式不是"关掉输入法让按键直通"，而是一个**带补全的独立模式**：
+敲 `hel` 弹候选，空格上屏 `help`。
+
+| 操作 | 行为 |
+|---|---|
+| 字母 | 进缓冲，候选窗按词频补全（1 万高频词） |
+| 空格 | 上屏首选 |
+| 回车 | 上屏你敲的字母本身（不要补全） |
+| 数字 | 选第 N 个候选 |
+| 退格 | 删一个字母，候选即时重算 |
+| Esc | 清空缓冲 |
+| Shift + 首字母 | 首字母大写（`Hel` → `Help`） |
+| Caps Lock | 整词大写（`HELP`） |
+
+**Shift 的切换判定放在松开时**：按下 Shift 再按字母是输入大写，只有单独按一下就松开才切模式。
+这不是细节——fcitx5 同样是这么做的，否则 `Shift+A` 想打大写 A 会先被切成中文。
+
+英文态候选窗的选中块是青色、中文态是蓝色，不靠文字标记，一眼分得出。
+
+```sh
+xime --en                          # 启动即英文
+xime --en-passthrough              # 英文但不补全，按键直接进应用
+xime --query hel --en              # 看某个前缀的补全结果
+xime --render-test e.bmp hel --en  # 渲染英文候选窗
+```
+
+![英文横排](dist/popup-en-horizontal.png) ![英文竖排](dist/popup-en-vertical.png)
+
+为什么英文单独一层、不复用拼音引擎：
+
+- **两件事本质不同**。拼音要在词网格上搜 N-best 路径（同一串字母能被切成不同音节组合），
+  英文只是"查出以它开头的词、按常用度排序"，一次二分就够。为共用而合并，两边都会变差。
+- **排名依据不同**：中文只看词频；英文还要处理大小写形态（句首、Caps Lock），这是拼音没有的维度。
+- **数据独立**：`data/en-words.txt`（按词频降序的一万词）由 `gen-en.py` 重排成字母序 + 词频索引，
+  运行时只查表，依旧零依赖。
+
+英文模式**刻意不做**拼写纠错、下一词预测、自动加空格或大写句首。这些在英文写作里都是替用户做主，
+输入法先做到"不添乱"就够了。
 
 ### 简体 / 繁体
 
@@ -373,6 +449,8 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 | 非 US 布局依赖 keymap 解析 | 只取每键前两列 keysym | 需要 AltGr 或三层的符号（如某些欧洲布局）可能取不到 |
 | 修饰键按标准 XKB 位判断 | 未解析 `modifier_map` 重映射 | 自定义 modifier 映射的布局下 Ctrl/Alt 判断可能失准 |
 | 改词库要重新构建 | 词条与字形编译进二进制 | 外部词表可热加载，但新字要显示仍需重烘图集 |
+| 英文只用一万高频词 | 词表取自公开的词频统计，不含专有名词与专业术语 | 罕见词、人名、代码标识符补不出来，按回车照原样上屏即可 |
+| 英文不纠错、不预测下一词 | 刻意不做（见第六节） | 打错字不会被改正，也不会替用户补句首大写 |
 | 简繁只有 OpenCC `s2t` 一种口径 | 未生成 `s2tw`/`s2hk` 变体表（用词差异大，如 软件/軟體） | 台湾/香港用词习惯需另加一列转换表，接口已按 `Variant` 预留 |
 
 ---
@@ -383,8 +461,8 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 |---|---|---|
 | deb Depends | `libc6`、`libwayland-client0`、`libxkbcommon0` | **无** |
 | 构建期依赖 | gcc、wayland-scanner、libwayland-dev、libxkbcommon-dev | cargo + musl target |
-| 体积 | 2.7MB / 安装 6.7MB | 2.6MB / 安装 7.0MB |
-| 代码量 | 约 2500 行 C | 约 2400 行 Rust |
+| 体积 | 2.7MB / 安装 6.7MB | 3.1MB / 安装 7.6MB |
+| 代码量 | 约 2200 行 C | 约 4600 行 Rust（含约 900 行单元测试） |
 | 37 字解码 | 9.32ms | 5.67ms |
 | 移植到新架构 | 交叉编译工具链 | `rustup target add` 即可 |
 
