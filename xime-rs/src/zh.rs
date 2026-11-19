@@ -292,7 +292,11 @@ mod tests {
     #[test]
     fn 繁体形词条可识别() {
         let n = trad_word_count();
-        assert!(n > 1000, "繁体形词条数异常: {n}");
+        // mkdict.py 词频归一化后，语料里的繁体计数已并入简体主形，
+        // 词库只剩零星繁体形词条（t2s 误判保留的乾坤类 + 非规范写法）。
+        // 若重新膨胀到上千，说明归一化失效或 zh.bin 与 dict.bin 不同步。
+        assert!(n < 1000, "繁体形词条数异常（词频归一化可能失效）: {n}");
+        assert!(n > 0, "繁体形词条应仍有零星存在");
         // 越界索引不应 panic
         assert!(keep_entry(usize::MAX, Variant::Hans));
         assert!(keep_entry(usize::MAX, Variant::Hant));
