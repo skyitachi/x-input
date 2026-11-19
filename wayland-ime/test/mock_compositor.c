@@ -41,6 +41,7 @@ static struct {
     char committed[512];
     int commit_count;
     uint32_t last_serial;
+    int vk_key_count;
 
     int sent_activate, sent_keymap, sent_keys, sent_esc;
 } T;
@@ -388,6 +389,8 @@ static void vk_key(struct wl_client *c, struct wl_resource *r, uint32_t time, ui
     (void)time;
     T.saw_vk_key = 1;
     T.vk_key_code = key;
+    if (state == WL_KEYBOARD_KEY_STATE_PRESSED)
+        T.vk_key_count++;
     printf("  [vk] key(code=%u, state=%u)\n", key, state);
 }
 
@@ -563,6 +566,14 @@ static void step(void)
         T.sent_activate = 1;
         printf("-> activate + done\n");
         zwp_input_method_v2_send_activate(T.im);
+        /* MOCK_PURPOSE=<n>：模拟应用声明的 content_purpose
+         * （8=password / 9=pin / 14=terminal），验证密码框透传路径 */
+        const char *pp = getenv("MOCK_PURPOSE");
+        if (pp && *pp) {
+            uint32_t purpose = (uint32_t)strtoul(pp, NULL, 10);
+            printf("-> content_type(hint=0, purpose=%u)\n", purpose);
+            zwp_input_method_v2_send_content_type(T.im, 0, purpose);
+        }
         zwp_input_method_v2_send_done(T.im);
         wl_display_flush_clients(T.display);
         return;
@@ -702,11 +713,15 @@ int main(void)
         }
     }
 
+    const char *pp = getenv("MOCK_PURPOSE");
+    int purpose_mode = pp && *pp;
+
     for (i = 0; i < 200; i++) {
         wl_event_loop_dispatch(loop, 30);
         wl_display_flush_clients(T.display);
         step();
-        if (T.saw_vk_key && T.committed[0])
+        if (T.saw_vk_key && (T.committed[0] ||
+                             (purpose_mode && T.vk_key_count >= (int)g_seq_n)))
             break;
     }
 
@@ -723,19 +738,39 @@ int main(void)
     } else {
         printf("ok   键盘 grab 已建立\n");
     }
-    if (T.preedit_events < 3) {
+    if (purpose_mode) {
+        /* 密码/终端透传：不组字、不提交、按键原样回注 */
+        if (T.preedit_events > 1) {
+            printf("FAIL 密码框不该有组字 preedit（%d 次）\n", T.preedit_events);
+            ok = 0;
+        } else {
+            printf("ok   密码框无组字（preedit %d 次）\n", T.preedit_events);
+        }
+        if (T.committed[0]) {
+            printf("FAIL 密码框不该有提交（\"%s\"）\n", T.committed);
+            ok = 0;
+        } else {
+            printf("ok   密码框无 commit_string\n");
+        }
+        if (T.vk_key_count < g_seq_n) {
+            printf("FAIL 回注键数不足（%d/%zu）\n", T.vk_key_count, g_seq_n);
+            ok = 0;
+        } else {
+            printf("ok   %zu 键全部原样回注（含数字）\n", g_seq_n);
+        }
+    } else if (T.preedit_events < 3) {
         printf("FAIL preedit 更新次数过少（%d）\n", T.preedit_events);
         ok = 0;
     } else {
         printf("ok   preedit 持续更新（%d 次，最后 \"%s\"）\n", T.preedit_events, T.last_preedit);
     }
-    if (strcmp(T.committed, g_expect) != 0) {
+    if (!purpose_mode && strcmp(T.committed, g_expect) != 0) {
         printf("FAIL 提交内容应为 \"%s\"，实际 \"%s\"\n", g_expect, T.committed);
         ok = 0;
     } else {
-        printf("ok   空格选中首选并提交 \"%s\"\n", g_expect);
+        printf("ok   提交内容 \"%s\" 符合预期\n", g_expect);
     }
-    if (T.commit_count < 3) {
+    if (!purpose_mode && T.commit_count < 3) {
         printf("FAIL commit 次数过少（%d）\n", T.commit_count);
         ok = 0;
     } else {
@@ -747,7 +782,9 @@ int main(void)
     } else {
         printf("ok   虚拟键盘已同步 keymap\n");
     }
-    if (!g_need_esc && g_custom) {
+    if (purpose_mode) {
+        printf("--   透传模式，回注断言已在上方完成\n");
+    } else if (!g_need_esc && g_custom) {
         printf("--   自定义序列未含 esc，跳过回注校验\n");
     } else if (!T.saw_vk_key || T.vk_key_code != KEY_ESC) {
         printf("FAIL Esc 未被回注给应用（code=%u）\n", T.vk_key_code);

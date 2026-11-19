@@ -1,0 +1,43 @@
+[08:21:05] 已连接会话总线: :1.564
+[08:21:05] 已占用服务名 org.fcitx.Fcitx5
+[08:21:05] 已占用服务名 org.fcitx.Fcitx-0
+[08:21:05] 模式=commit 上屏文本='XIME接管成功'；等待客户端连接…
+[08:21:06] == CreateInputContext -> /org/freedesktop/portal/inputcontext/1（来自 :1.500，入参 [('program', 'wechat'), ('display', 'wayland:'), ('clientControlVirtualkeyboardShow', 'true'), ('clientControlVirtualkeyboardHide', 'false')]）
+[08:21:06] 创建输入上下文 /org/freedesktop/portal/inputcontext/1  program=dbus.String('wechat') 从 :1.500
+[08:21:06]    args={dbus.String('program'): dbus.String('wechat'), dbus.String('display'): dbus.String('wayland:'), dbus.String('clientControlVirtualkeyboardShow'): dbus.String('true'), dbus.String('clientControlVirtualkeyboardHide'): dbus.String('false')}
+[08:21:06] SetSupportedCapability 0x1ffffffffff
+[08:21:06] SetCapability 0x1e801800032
+[08:21:07] == CreateInputContext -> /org/freedesktop/portal/inputcontext/2（来自 :1.565，入参 [('program', 'xime-test')]）
+[08:21:07] 创建输入上下文 /org/freedesktop/portal/inputcontext/2  program=dbus.String('xime-test') 从 :1.565
+[08:21:07]    args={dbus.String('program'): dbus.String('xime-test')}
+[08:21:07] ProcessKeyEvent #1 keyval=0x61 keycode=38 state=0x0 press=True focused=False
+[08:21:07]   -> CommitString('XIME接管成功')
+[08:21:37] FocusIn
+[08:21:37] SetCapability 0xe801800032
+[08:21:37] SetCursorRectV2 277,1253 2x22 @1.0
+[08:21:42] Reset
+[08:21:42] FocusOut
+[08:21:42] FocusIn
+[08:21:42] SetCapability 0x1e801800032
+[08:21:42] SetCapability 0x1e001800032
+[08:21:42] FocusOut
+[08:21:42] FocusIn
+[08:21:42] SetCapability 0xe001800032
+[08:21:42] SetCapability 0xe801800032
+[08:21:44] FocusIn
+[08:21:44] ProcessKeyEvent #1 keyval=0x61 keycode=38 state=0x10 press=False focused=True
+[08:21:44]   -> CommitString('XIME接管成功')
+[08:21:44] SetCursorRectV2 365,1253 2x22 @1.0
+[08:21:44] SetCapability 0xe801800072
+[08:21:44] SetSurroundingText 'XIME接管成功' cursor=8
+[08:21:44] SetCapability 0xe801800032
+[08:21:44] FocusIn
+[08:21:44] ProcessKeyEvent #2 keyval=0x61 keycode=38 state=0x10 press=True focused=True
+[08:21:44]   -> CommitString('XIME接管成功')
+[08:21:44] SetCursorRectV2 452,1253 2x22 @1.0
+[08:21:44] SetCapability 0xe801800072
+[08:21:44] SetSurroundingText 'XIME接管成功XIME接管成功' cursor=16
+[08:21:44] SetCapability 0xe801800032
+[08:21:48] Reset
+[08:21:48] Reset
+[08:21:48] FocusOut
