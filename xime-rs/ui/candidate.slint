@@ -6,6 +6,11 @@
 // 注意：这不是一个普通窗口。宿主进程把它渲染到内存，再把像素挂到
 // zwp_input_popup_surface_v2 上，所以 background 必须是透明的，
 // 真正的底色由里面那层圆角矩形画。
+//
+// 三种形态（横排 / 竖排 / 网格）用三个互斥的 `if` 条件元素切换——
+// Slint 的条件元素没有 else 分支，但 layout 是枚举，同一时刻只会命中一个。
+// 每个分支的 panel 都把自己的宽高绑定到内部布局的固有尺寸，避免背景
+// 铺满整块大画布（那样 alpha 裁剪会把候选条裁成画布大小）。
 
 export global Theme {
     in-out property <color> bg: #1f1f1f;
@@ -20,17 +25,28 @@ export global Theme {
     in-out property <length> pad-y: 6px;
     in-out property <length> item-pad-x: 7px;
     in-out property <length> item-gap: 4px;
+    in-out property <length> row-gap: 2px;
     in-out property <length> font-size: 14px;
     in-out property <length> row-height: 26px;
+    in-out property <length> hl-radius: 6px;
+    in-out property <length> border-w: 1px;
+}
+
+export enum Layout {
+    horizontal,
+    vertical,
+    grid,
 }
 
 component Chip inherits Rectangle {
     in property <int> index: 0;
     in property <string> label: "";
     in property <bool> selected: false;
+    // 横排/竖排用「1.」带点序号，网格用「1 」空格序号（对齐 fcitx5）
+    in property <bool> with-dot: true;
 
     height: Theme.row-height;
-    border-radius: 6px;
+    border-radius: Theme.hl-radius;
     background: selected ? Theme.sel-bg : transparent;
 
     HorizontalLayout {
@@ -39,7 +55,7 @@ component Chip inherits Rectangle {
         spacing: 3px;
 
         Text {
-            text: "\{index}.";
+            text: with-dot ? "\{index}." : "\{index} ";
             color: selected ? Theme.sel-text : Theme.hint;
             font-size: Theme.font-size - 2px;
             vertical-alignment: center;
@@ -56,20 +72,24 @@ component Chip inherits Rectangle {
 
 export component CandidateBar inherits Window {
     in property <[string]> candidates: [];
+    // 网格形态：Rust 侧把候选按 cols 切成行，这里用二维模型嵌套遍历。
+    in property <[[string]]> rows: [];
+    in-out property <Layout> layout: Layout.horizontal;
+    in property <int> cols: 3;
 
     background: transparent;
 
-    // panel 的宽高绑定到内容布局的固有尺寸，而不是铺满 Window。
-    // 这样裁剪 alpha 得到的包围盒就是候选条本身，不含多余透明留白。
-    panel := Rectangle {
-        width: items.preferred-width;
-        height: items.preferred-height;
+    if layout == Layout.horizontal : Rectangle {
+        x: 0;
+        y: 0;
+        width: h-items.preferred-width;
+        height: h-items.preferred-height;
         border-radius: Theme.radius;
         background: Theme.bg;
-        border-width: 1px;
+        border-width: Theme.border-w;
         border-color: Theme.border;
 
-        items := HorizontalLayout {
+        h-items := HorizontalLayout {
             padding-left: Theme.pad-x;
             padding-right: Theme.pad-x;
             padding-top: Theme.pad-y;
@@ -80,6 +100,63 @@ export component CandidateBar inherits Window {
                 index: i + 1;
                 label: c;
                 selected: i == 0;
+                with-dot: true;
+            }
+        }
+    }
+
+    if layout == Layout.vertical : Rectangle {
+        x: 0;
+        y: 0;
+        width: v-items.preferred-width;
+        height: v-items.preferred-height;
+        border-radius: Theme.radius;
+        background: Theme.bg;
+        border-width: Theme.border-w;
+        border-color: Theme.border;
+
+        v-items := VerticalLayout {
+            padding-left: Theme.pad-x;
+            padding-right: Theme.pad-x;
+            padding-top: Theme.pad-y;
+            padding-bottom: Theme.pad-y;
+            spacing: Theme.row-gap;
+
+            for c[i] in candidates : Chip {
+                index: i + 1;
+                label: c;
+                selected: i == 0;
+                with-dot: true;
+            }
+        }
+    }
+
+    if layout == Layout.grid : Rectangle {
+        x: 0;
+        y: 0;
+        width: g-items.preferred-width;
+        height: g-items.preferred-height;
+        border-radius: Theme.radius;
+        background: Theme.bg;
+        border-width: Theme.border-w;
+        border-color: Theme.border;
+
+        g-items := VerticalLayout {
+            padding-left: Theme.pad-x;
+            padding-right: Theme.pad-x;
+            padding-top: Theme.pad-y;
+            padding-bottom: Theme.pad-y;
+            spacing: Theme.row-gap;
+
+            for row[i] in rows : HorizontalLayout {
+                spacing: Theme.item-gap;
+
+                for c[j] in row : Chip {
+                    index: i * cols + j + 1;
+                    label: c;
+                    selected: i == 0 && j == 0;
+                    with-dot: false;
+                }
             }
         }
     }

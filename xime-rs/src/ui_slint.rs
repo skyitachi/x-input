@@ -10,6 +10,9 @@
 //! preferred-width 对含 for 循环的布局求值不可靠（实测会给出 22px 这种
 //! 明显偏小的值）。因此改为先在一块足够大的画布上渲染，再扫描 alpha 通道
 //! 求非透明内容的包围盒——panel 是不透明的圆角矩形，包围盒就是它的范围。
+//!
+//! 形态与主题：layout（横排/竖排/网格）、列数、颜色、度量都从 popup::Style
+//! 映射进 .slint 的 Theme global 与组件属性，配置热重载时经 reload 重新写入。
 
 use std::rc::Rc;
 use std::time::Instant;
@@ -17,15 +20,18 @@ use std::time::Instant;
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
-use slint::platform::{Platform, WindowAdapter};
-use slint::{ModelRc, PhysicalSize, SharedString, VecModel};
+use slint::platform::{Platform, WindowAdapter, WindowEvent};
+use slint::{ComponentHandle, ModelRc, PhysicalSize, SharedString, VecModel};
+
+use crate::popup::Style;
 
 slint::include_modules!();
 
-/// 渲染画布上限。候选条最宽也就十几条，1024×128 足够；超出会被裁，但我们
-/// 的候选数在 popup::Style::max_items() 里已限制在 6~9 条。
-const CANVAS_W: i32 = 1024;
-const CANVAS_H: i32 = 128;
+/// 逻辑画布尺寸（逻辑像素，scale=1 时的取值）。横排单行最宽也就十几条候选；
+/// 竖排/网格最多 9 条，9×行高(26) + 间距 ≈ 262px 高，所以高给到 512 留足余量。
+/// 物理画布 = 逻辑画布 × scale，在高 DPI 屏上字体/间距按比例放大而不裁切。
+const LOGICAL_W: i32 = 1024;
+const LOGICAL_H: i32 = 512;
 
 struct SlintPlatform {
     window: Rc<MinimalSoftwareWindow>,
@@ -42,52 +48,179 @@ impl Platform for SlintPlatform {
     }
 }
 
+/// 预乘 ARGB8888（config 内部表示）→ Slint 颜色（反预乘回直通 alpha）。
+fn to_slint_color(pm: u32) -> slint::Color {
+    let a = ((pm >> 24) & 0xFF) as u32;
+    let un = |v: u32| if a == 0 { 0 } else { (v * 255 / a).min(255) };
+    slint::Color::from_argb_u8(
+        a as u8,
+        un((pm >> 16) & 0xFF) as u8,
+        un((pm >> 8) & 0xFF) as u8,
+        un(pm & 0xFF) as u8,
+    )
+}
+
+/// popup::Layout → Slint 生成的 Layout 枚举
+fn to_slint_layout(l: crate::popup::Layout) -> Layout {
+    match l {
+        crate::popup::Layout::Horizontal => Layout::Horizontal,
+        crate::popup::Layout::Vertical => Layout::Vertical,
+        crate::popup::Layout::Grid => Layout::Grid,
+    }
+}
+
+/// 把主题颜色/度量写进 Slint 的 Theme global，把形态/列数写进组件。
+fn write_style(ui: &CandidateBar, style: &Style, layout: Layout, cols: i32) {
+    let c = &style.theme.colors;
+    let m = &style.theme.metrics;
+    let theme = ui.global::<Theme>();
+    theme.set_bg(to_slint_color(c.bg));
+    theme.set_border(to_slint_color(c.border));
+    theme.set_text(to_slint_color(c.text));
+    // 序号与候选同色（自绘里序号和词是同一个字符串一起画的，没有单独的弱化色）
+    theme.set_hint(to_slint_color(c.text));
+    theme.set_sel_bg(to_slint_color(c.accent));
+    theme.set_sel_text(to_slint_color(c.sel_text));
+
+    theme.set_radius(m.radius as f32);
+    theme.set_pad_x(m.pad_x as f32);
+    theme.set_pad_y(m.pad_y as f32);
+    theme.set_item_pad_x(m.item_pad_x as f32);
+    theme.set_item_gap(m.item_gap as f32);
+    theme.set_row_gap(m.row_gap as f32);
+    theme.set_hl_radius(m.hl_radius as f32);
+    theme.set_border_w(m.border_w as f32);
+
+    ui.set_layout(layout);
+    ui.set_cols(cols);
+}
+
 pub struct SlintUi {
     window: Rc<MinimalSoftwareWindow>,
     ui: CandidateBar,
-    /// 大画布的渲染缓冲（预乘 RGBA8）
+    /// 当前缩放因子（逻辑像素 → 物理像素）
+    scale: f32,
+    /// 物理画布尺寸 = ceil(逻辑画布 × scale)
+    canvas_w: i32,
+    canvas_h: i32,
+    /// 大画布的渲染缓冲（预乘 RGBA8），按物理像素分配
     buf: Vec<PremultipliedRgbaColor>,
-    /// 裁剪后的内容区，ARGB8888，直接交给 wl_shm
+    /// 裁剪后的内容区，ARGB8888，直接交给 wl_shm（物理像素）
     out: Vec<u32>,
     out_w: i32,
     out_h: i32,
+    /// 当前形态与列数（render 时按它决定走一维还是二维模型）
+    layout: Layout,
+    cols: i32,
 }
 
 impl SlintUi {
     /// 创建 UI。`set_platform` 是进程级单次操作，已有平台时返回 None。
-    pub fn new() -> Option<SlintUi> {
+    pub fn new(scale: f32, style: &Style) -> Option<SlintUi> {
         let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
         let platform = SlintPlatform { window: window.clone(), start: Instant::now() };
         slint::platform::set_platform(Box::new(platform)).ok()?;
 
         let ui = CandidateBar::new().ok()?;
         ui.show().ok()?;
-        let buf = vec![
-            PremultipliedRgbaColor { red: 0, green: 0, blue: 0, alpha: 0 };
-            (CANVAS_W * CANVAS_H) as usize
-        ];
-        Some(SlintUi { window, ui, buf, out: Vec::new(), out_w: 0, out_h: 0 })
+
+        let layout = to_slint_layout(style.layout);
+        let cols = style.cols.max(1) as i32;
+        write_style(&ui, style, layout, cols);
+
+        let mut sl = SlintUi {
+            window,
+            ui,
+            // 设成 0.0 强制首次 set_scale 走完整分配（包括 scale=1.0 的情况）
+            scale: 0.0,
+            canvas_w: LOGICAL_W,
+            canvas_h: LOGICAL_H,
+            buf: Vec::new(),
+            out: Vec::new(),
+            out_w: 0,
+            out_h: 0,
+            layout,
+            cols,
+        };
+        sl.set_scale(scale);
+        Some(sl)
     }
 
-    /// 更新候选并渲染一帧，返回内容区实际尺寸（已裁掉透明留白）。
-    pub fn render(&mut self, cands: &[String]) -> (i32, i32) {
-        let model: Vec<SharedString> =
-            cands.iter().map(|s| SharedString::from(s.as_str())).collect();
-        self.ui.set_candidates(ModelRc::from(Rc::new(VecModel::from(model))));
+    /// 配置热重载后同步形态/主题（颜色、度量、布局、列数都可能变）。
+    pub fn reload(&mut self, style: &Style) {
+        self.layout = to_slint_layout(style.layout);
+        self.cols = style.cols.max(1) as i32;
+        write_style(&self.ui, style, self.layout, self.cols);
+    }
 
-        // 在大画布上渲染。MinimalSoftwareWindow 的 size 由 set_size 决定。
-        self.window.window().set_size(PhysicalSize::new(CANVAS_W as u32, CANVAS_H as u32));
+    /// 设置缩放因子。通知 Slint 按逻辑像素布局，并按物理像素重新分配画布。
+    /// scale 来自合成器（fractional scale / wl_output）或 XIME_SCALE 环境变量。
+    pub fn set_scale(&mut self, scale: f32) {
+        // 过滤非法值；1.0~4.0 之外的极端缩放在真实显示器上不出现，夹紧防止 OOM。
+        let scale = if scale.is_finite() && scale > 0.0 { scale.clamp(0.5, 4.0) } else { 1.0 };
+        if (scale - self.scale).abs() < 0.001 {
+            return;
+        }
+        self.scale = scale;
+        // 关键：告诉 Slint 逻辑像素→物理像素的换算。之后 set_size 传物理尺寸时，
+        // Slint 会内部换算成逻辑尺寸布局，软件渲染器再按 scale 放大字体/间距。
+        self.window.window().dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        self.canvas_w = (LOGICAL_W as f32 * scale).ceil() as i32;
+        self.canvas_h = (LOGICAL_H as f32 * scale).ceil() as i32;
+        self.buf = vec![
+            PremultipliedRgbaColor { red: 0, green: 0, blue: 0, alpha: 0 };
+            (self.canvas_w * self.canvas_h) as usize
+        ];
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// 更新候选并渲染一帧，返回内容区实际尺寸（物理像素，已裁掉透明留白）。
+    pub fn render(&mut self, cands: &[String]) -> (i32, i32) {
+        match self.layout {
+            Layout::Horizontal | Layout::Vertical => {
+                let model: Vec<SharedString> =
+                    cands.iter().map(|s| SharedString::from(s.as_str())).collect();
+                self.ui.set_candidates(ModelRc::from(Rc::new(VecModel::from(model))));
+            }
+            Layout::Grid => {
+                // 网格：按 cols 切成行，交给 .slint 里的嵌套 for 遍历。
+                // Slint 的 [[string]] 对应 Rust 的 ModelRc<ModelRc<SharedString>>：
+                // 外层 model 的元素是「一行」这个内层 model。
+                let cols = self.cols.max(1) as usize;
+                let row_models: Vec<ModelRc<SharedString>> = cands
+                    .chunks(cols)
+                    .map(|row| {
+                        let v: Vec<SharedString> =
+                            row.iter().map(|s| SharedString::from(s.as_str())).collect();
+                        ModelRc::from(Rc::new(VecModel::from(v)))
+                    })
+                    .collect();
+                let outer: ModelRc<ModelRc<SharedString>> =
+                    ModelRc::from(Rc::new(VecModel::from(row_models)));
+                self.ui.set_rows(outer);
+            }
+        }
+
+        // 在物理画布上渲染。set_size 传物理尺寸，Slint 已知道 scale，
+        // 会把逻辑布局放大到这块物理画布上（字体、圆角、间距都按比例）。
+        let (cw, ch) = (self.canvas_w, self.canvas_h);
+        self.window.window().set_size(PhysicalSize::new(cw as u32, ch as u32));
         self.window.request_redraw();
         let win = self.window.clone();
         win.draw_if_needed(|renderer| {
-            renderer.render(&mut self.buf[..], CANVAS_W as usize);
+            renderer.render(&mut self.buf[..], cw as usize);
         });
 
         // 扫描 alpha 求内容包围盒（panel 不透明，其余全透明）。
-        let (mut x0, mut y0, mut x1, mut y1) = (CANVAS_W, CANVAS_H, -1, -1);
-        for y in 0..CANVAS_H {
-            let row = (y * CANVAS_W) as usize;
-            for x in 0..CANVAS_W {
+        let (mut x0, mut y0, mut x1, mut y1) = (cw, ch, -1, -1);
+        for y in 0..ch {
+            let row = (y * cw) as usize;
+            for x in 0..cw {
                 if self.buf[row + x as usize].alpha > 0 {
                     if x < x0 { x0 = x; }
                     if x > x1 { x1 = x; }
@@ -110,7 +243,7 @@ impl SlintUi {
         self.out.clear();
         self.out.reserve((w * h) as usize);
         for y in y0..=y1 {
-            let row = (y * CANVAS_W) as usize;
+            let row = (y * cw) as usize;
             for x in x0..=x1 {
                 let p = &self.buf[row + x as usize];
                 self.out.push(to_argb(*p));

@@ -13,6 +13,14 @@ pub const IFACE_SHM: &str = "wl_shm";
 pub const IFACE_SEAT: &str = "wl_seat";
 pub const IFACE_INPUT_METHOD: &str = "zwp_input_method_manager_v2";
 pub const IFACE_VIRTUAL_KEYBOARD: &str = "zwp_virtual_keyboard_manager_v1";
+pub const IFACE_OUTPUT: &str = "wl_output";
+pub const IFACE_FRACTIONAL_SCALE: &str = "wp_fractional_scale_manager_v1";
+pub const IFACE_VIEWPORTER: &str = "wp_viewporter";
+
+// --- wl_output（事件解析用，wire 格式见 wayland.xml）
+// event 3: scale(int factor) —— 整数缩放，since v2
+// --- wp_fractional_scale_v1（事件解析用）
+// event 0: preferred_scale(uint scale) —— scale × 120
 
 // --- wl_display
 pub fn get_registry(c: &mut Conn, id: u32) -> io::Result<()> {
@@ -105,6 +113,22 @@ pub fn surface_set_input_region(c: &mut Conn, surf: u32, region: u32) -> io::Res
 pub fn surface_damage_buffer(c: &mut Conn, surf: u32, x: i32, y: i32, w: i32, h: i32) -> io::Result<()> {
     // request 9（since v4）：按缓冲像素坐标标脏，比 surface 坐标更适合高 DPI
     c.send(surf, 9, Msg::new().i32(x).i32(y).i32(w).i32(h))
+}
+
+// --- wp_fractional_scale_manager_v1
+pub fn get_fractional_scale(c: &mut Conn, mgr: u32, surf: u32, id: u32) -> io::Result<()> {
+    // request 1: get_fractional_scale(id new_id, surface object)
+    c.send(mgr, 1, Msg::new().new_id(id).u32(surf))
+}
+
+// --- wp_viewporter（opcode 1: get_viewport(id new_id, surface object)）
+pub fn get_viewport(c: &mut Conn, mgr: u32, surf: u32, id: u32) -> io::Result<()> {
+    c.send(mgr, 1, Msg::new().new_id(id).u32(surf))
+}
+
+// --- wp_viewport.set_destination（opcode 2: int width, int height）
+pub fn viewport_set_destination(c: &mut Conn, vp: u32, w: i32, h: i32) -> io::Result<()> {
+    c.send(vp, 2, Msg::new().i32(w).i32(h))
 }
 
 // --- zwp_input_method_manager_v2

@@ -43,6 +43,20 @@ struct Xime {
     seat: u32,
     im_manager: u32,
     vk_manager: u32,
+    /// 主显示器（第一个 wl_output），用于读取整数 scale 作为回退
+    output: u32,
+    /// 分数缩放管理器（wp_fractional_scale_manager_v1），0 = 合成器不支持
+    frac_scale_mgr: u32,
+    /// 绑定到 popup surface 的分数缩放对象，收到 preferred_scale 事件
+    frac_scale: u32,
+    /// viewporter 全局（支持任意分数缩放的逻辑尺寸声明）
+    viewporter: u32,
+    /// 绑定到 popup surface 的 wp_viewport 对象
+    viewport: u32,
+    /// 当前缩放来源与值（逻辑→物理），Slint 与 shm 缓冲共用
+    scale: f32,
+    /// 是否用环境变量 XIME_SCALE 锁定了缩放（锁定后忽略合成器的 scale 事件）
+    scale_locked: bool,
     im: u32,
     grab: u32,
     popup_surf: u32,
@@ -110,12 +124,22 @@ impl Xime {
         dict::init();
         let mut engine = Engine::new();
         engine.set_variant(variant);
+
+        // 初始缩放：XIME_SCALE 环境变量优先（便于覆盖/测试）。
+        // 合成器的 fractional scale / wl_output scale 会在连接建立后到达并覆盖它。
+        let env_scale = std::env::var("XIME_SCALE").ok().and_then(|s| s.parse::<f32>().ok());
+        let scale_locked = env_scale.is_some();
+        let init_scale = env_scale.unwrap_or(1.0);
+
         // Slint UI：set_platform 是进程级一次性操作，这里只在 Wayland 前端初始化。
         // 失败时（例如平台已设置）自动回退到手写渲染，不让输入法起不来。
         let slint_ui = if use_slint {
-            match ui_slint::SlintUi::new() {
+            match ui_slint::SlintUi::new(init_scale, &style) {
                 Some(ui) => {
-                    eprintln!("xime: 候选窗使用 Slint 软件渲染");
+                    eprintln!(
+                        "xime: 候选窗使用 Slint 软件渲染，初始 scale={init_scale}，形态={}",
+                        style.layout.name()
+                    );
                     Some(ui)
                 }
                 None => {
@@ -135,6 +159,13 @@ impl Xime {
             seat: 0,
             im_manager: 0,
             vk_manager: 0,
+            output: 0,
+            frac_scale_mgr: 0,
+            frac_scale: 0,
+            viewporter: 0,
+            viewport: 0,
+            scale: init_scale,
+            scale_locked,
             im: 0,
             grab: 0,
             popup_surf: 0,
@@ -173,6 +204,30 @@ impl Xime {
     fn log(&self, msg: &str) {
         if self.verbose {
             println!("xime: {msg}");
+        }
+    }
+
+    /// 应用合成器报告的缩放。XIME_SCALE 锁定时忽略。变化时同步给 Slint，
+    /// 若候选窗正显示则重渲染一帧，避免切换显示器后候选条尺寸不变。
+    fn apply_scale(&mut self, scale: f32, source: &str) {
+        if self.scale_locked {
+            return;
+        }
+        if (scale - self.scale).abs() < 0.001 {
+            return;
+        }
+        self.scale = scale;
+        if let Some(ui) = self.slint_ui.as_mut() {
+            ui.set_scale(scale);
+        }
+        self.log(&format!("缩放 {scale:.3} ← {source}"));
+        // 用当前候选重画一帧，让尺寸立即生效（来源与正常刷新路径一致）
+        if self.visible {
+            let cands = self.engine.cands.clone();
+            if !cands.is_empty() {
+                let mode = if self.chinese { popup::Mode::Zh } else { popup::Mode::En };
+                let _ = self.popup_update(&cands, mode);
+            }
         }
     }
 
@@ -230,6 +285,26 @@ impl Xime {
             }
             return Ok(());
         }
+        if self.output != 0 && m.obj == self.output {
+            // wl_output.scale (event 3, since v2): int factor
+            if m.opcode == 3 {
+                let factor = m.args.i32();
+                if factor > 0 {
+                    self.apply_scale(factor as f32, "wl_output");
+                }
+            }
+            return Ok(());
+        }
+        if self.frac_scale != 0 && m.obj == self.frac_scale {
+            // wp_fractional_scale_v1.preferred_scale (event 0): uint，值 = scale × 120
+            if m.opcode == 0 {
+                let v = m.args.u32();
+                if v > 0 {
+                    self.apply_scale(v as f32 / 120.0, "fractional-scale");
+                }
+            }
+            return Ok(());
+        }
         Ok(())
     }
 
@@ -255,6 +330,21 @@ impl Xime {
             proto::IFACE_VIRTUAL_KEYBOARD => {
                 self.vk_manager = self.conn.alloc_id();
                 proto::bind(&mut self.conn, self.reg, name, iface, 1, self.vk_manager)?;
+            }
+            proto::IFACE_OUTPUT => {
+                // 只取第一个 output 作为整数 scale 回退来源（多显示器下 fractional scale 更准）
+                if self.output == 0 {
+                    self.output = self.conn.alloc_id();
+                    proto::bind(&mut self.conn, self.reg, name, iface, version.min(4), self.output)?;
+                }
+            }
+            proto::IFACE_FRACTIONAL_SCALE => {
+                self.frac_scale_mgr = self.conn.alloc_id();
+                proto::bind(&mut self.conn, self.reg, name, iface, 1, self.frac_scale_mgr)?;
+            }
+            proto::IFACE_VIEWPORTER => {
+                self.viewporter = self.conn.alloc_id();
+                proto::bind(&mut self.conn, self.reg, name, iface, 1, self.viewporter)?;
             }
             _ => {
                 self.log(&format!("忽略全局对象 {iface} v{version}"));
@@ -750,6 +840,10 @@ impl Xime {
         }
         self.cfg_stamp = stamp;
         self.style = parse_style(&self.args);
+        // Slint 路径也同步形态/主题：颜色、度量、布局、列数都可能变。
+        if let Some(ui) = self.slint_ui.as_mut() {
+            ui.reload(&self.style);
+        }
         self.log(&format!(
             "配置已重载：主题={} 形态={}",
             self.style.theme.name,
@@ -833,6 +927,20 @@ impl Xime {
         proto::im_get_popup(&mut self.conn, self.im, role, surf)?;
         self.popup_surf = surf;
         self.popup_role = role;
+
+        // 绑定分数缩放：合成器按该 surface 所在显示器发 preferred_scale，
+        // 混合 DPI 多显示器下比全局 wl_output 更准。XIME_SCALE 锁定时无须绑定。
+        if self.frac_scale_mgr != 0 && !self.scale_locked {
+            self.frac_scale = self.conn.alloc_id();
+            proto::get_fractional_scale(&mut self.conn, self.frac_scale_mgr, surf, self.frac_scale)?;
+        }
+        // viewport：物理 buffer 需要声明对应的逻辑显示尺寸，合成器才不会
+        // 在缩放输出上把候选条放大成 scale 倍。scale=1 时不用设置。
+        if self.viewporter != 0 {
+            self.viewport = self.conn.alloc_id();
+            proto::get_viewport(&mut self.conn, self.viewporter, surf, self.viewport)?;
+        }
+
         proto::surface_commit(&mut self.conn, surf)?;
         self.log("候选窗 surface 已创建");
         Ok(())
@@ -903,6 +1011,19 @@ impl Xime {
         }
         if let Some(b) = &self.buf {
             proto::surface_attach(&mut self.conn, self.popup_surf, Some(b.buffer), 0, 0)?;
+        }
+        // viewport：告诉合成器物理 buffer 对应的逻辑显示尺寸。Slint 按 scale 渲染，
+        // 这里把物理尺寸除回 scale，候选条在缩放屏上才维持与 scale=1 一致的视觉大小。
+        // legacy 渲染不涉及 scale，destination 就等于 buffer 尺寸（等效无缩放）。
+        if self.viewport != 0 {
+            let (lw, lh) = if self.slint_ui.is_some() {
+                let s = self.scale.max(0.01);
+                (((w as f32) / s).round().max(1.0) as i32,
+                 ((h as f32) / s).round().max(1.0) as i32)
+            } else {
+                (w, h)
+            };
+            proto::viewport_set_destination(&mut self.conn, self.viewport, lw, lh)?;
         }
         if self.comp_ver >= 4 {
             proto::surface_damage_buffer(&mut self.conn, self.popup_surf, 0, 0, w, h)?;
@@ -1051,7 +1172,7 @@ fn usage() {
     println!("  --verbose           打印协议与按键处理细节");
     println!("  --inline-candidates 把候选塞进 preedit 由应用字体渲染（不建候选窗）");
     println!("  --legacy-ui         候选窗用手写 Canvas 渲染（默认用 Slint 软件渲染）；对照/救急用");
-    println!("  --popup FORM        候选窗形态: horizontal(默认) | vertical | grid（Slint UI 暂固定横排）");
+    println!("  --popup FORM        候选窗形态: horizontal(默认) | vertical | grid");
     println!("  --popup-cols N      网格形态的列数（默认 3）");
     println!("  --theme NAME        候选窗主题: light(默认) | dark | fcitx:NAME | 主题文件路径");
     println!("                      例: --theme fcitx:omarchy  直接用 fcitx5 的主题");
@@ -1066,7 +1187,7 @@ fn usage() {
     println!("                      与 fcitx5 及本程序的 Wayland 前端互斥，二者只能留一个");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
     println!("  --render-test PATH [拼音]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
-    println!("  --ui-probe PATH [拼音]     用 Slint 软件渲染器画候选条并写 BMP（校验 Slint UI）");
+    println!("  --ui-probe PATH [拼音] [scale]  用 Slint 软件渲染器画候选条写 BMP（可指定缩放校验 HiDPI）");
     println!("  --probe             枚举合成器提供的全局对象");
     println!("  --bench             解码性能测试");
     println!("  --keymap-test PATH  解析一份 XKB keymap 并抽查按键");
@@ -1212,7 +1333,8 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--ui-probe") {
         let path = args.get(i + 1).map(|s| s.as_str()).unwrap_or("/tmp/slint.bmp");
         let input = args.get(i + 2).map(|s| s.as_str()).unwrap_or("你好");
-        ui_probe(path, input);
+        let scale = args.get(i + 3).and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0);
+        ui_probe(path, input, scale, &style);
         return;
     }
     if args.iter().any(|a| a == "--probe") {
@@ -1489,18 +1611,20 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
 }
 
 /// Slint 候选条渲染探针：用 Slint 软件渲染器画一条候选并写 BMP，供肉眼校验。
-fn ui_probe(path: &str, input: &str) {
+/// scale 参数用于验证 HiDPI 缩放（逻辑布局不变，输出物理像素按比例放大）。
+/// 形态/主题跟随命令行 --popup / --popup-cols / --theme。
+fn ui_probe(path: &str, input: &str, scale: f32, style: &popup::Style) {
     dict::init();
     let mut e = Engine::new();
     for c in input.chars() {
         e.push_char(c);
     }
-    let cands: Vec<String> = e.cands.iter().take(6).cloned().collect();
+    let cands: Vec<String> = e.cands.iter().take(style.max_items()).cloned().collect();
     if cands.is_empty() {
         eprintln!("无候选");
         std::process::exit(1);
     }
-    let mut ui = match ui_slint::SlintUi::new() {
+    let mut ui = match ui_slint::SlintUi::new(scale, style) {
         Some(u) => u,
         None => {
             eprintln!("Slint 平台初始化失败（可能测试进程里已有平台）");
@@ -1510,9 +1634,12 @@ fn ui_probe(path: &str, input: &str) {
     let (w, h) = ui.render(&cands);
     match ui.write_bmp(path, true) {
         Ok(()) => println!(
-            "已写出 {path}  {w}x{h}  Slint 软件渲染  候选 {} 条: {:?}",
-            cands.len(),
-            cands
+            "已写出 {path}  {w}x{h} 物理像素 (scale={:.2}, Slint 软件渲染)  形态 {}（{} 列）  主题 {}  候选 {} 条",
+            ui.scale(),
+            style.layout.name(),
+            style.cols,
+            style.theme.name.as_str(),
+            cands.len()
         ),
         Err(e) => eprintln!("写 BMP 失败: {e}"),
     }
