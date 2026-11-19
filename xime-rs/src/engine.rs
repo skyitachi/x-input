@@ -14,8 +14,8 @@ use crate::zh::{self, Variant};
 pub const MAX_INPUT: usize = 32;
 pub const CAND_MAX: usize = 128;
 
-const HITS: usize = 4; // 同一拼音取几个同音候选参与搜索
-const BEST: usize = 9; // 每个位置保留几条路径
+const HITS: usize = 6; // 同一拼音取几个同音候选参与搜索
+const BEST: usize = 27; // 每个位置保留几条路径（决定候选总数，27 = 3 页）
 const EDGES: usize = 96; // 每个位置最多几条边
 const MAX_KEY: usize = 32; // 词条拼音键最长字节数
 

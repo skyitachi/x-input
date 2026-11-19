@@ -18,6 +18,7 @@ use zbus::interface;
 use zbus::object_server::{ObjectServer, SignalEmitter};
 use zbus::Connection;
 
+use crate::en;
 use crate::engine::Engine;
 use crate::zh::Variant;
 
@@ -48,9 +49,17 @@ const KS_RETURN: u32 = 0xFF0D;
 const KS_ESCAPE: u32 = 0xFF1B;
 const KS_SHIFT_L: u32 = 0xFFE1;
 const KS_SHIFT_R: u32 = 0xFFE2;
+/// 翻页键：`-` / `=` 与 PageUp / PageDown（fcitx5 拼音的默认绑定）
+const KS_MINUS: u32 = 0x2D;
+const KS_EQUAL: u32 = 0x3D;
+const KS_PAGE_UP: u32 = 0xFF55;
+const KS_PAGE_DOWN: u32 = 0xFF56;
 
 /// 候选窗排版：2 = 水平排列（Phase 0.5 实测微信能正确渲染）
 const LAYOUT_HORIZONTAL: i32 = 2;
+
+/// 每页候选数：必须正好 9，数字键 1-9 才与之一一对应
+const PAGE_SIZE: usize = 9;
 
 // ---------------------------------------------------------------------------
 // 全局状态
@@ -93,6 +102,24 @@ impl Global {
 
     fn chinese(&self) -> bool {
         self.inner.lock().map(|g| g.chinese).unwrap_or(true)
+    }
+
+    fn variant(&self) -> Variant {
+        self.inner.lock().map(|g| g.variant).unwrap_or(Variant::Hans)
+    }
+
+    /// 简繁切换（Ctrl+Shift+F），返回切换后的形态，调用方据此就地重算
+    fn toggle_variant(&self) -> Variant {
+        let mut g = match self.inner.lock() {
+            Ok(g) => g,
+            Err(_) => return Variant::Hans,
+        };
+        g.variant = g.variant.toggled();
+        let v = g.variant;
+        if g.verbose {
+            eprintln!("xime-dbus: 输出形态切换为{}", v.label());
+        }
+        v
     }
 
     /// 按输入法名设置中英状态，供状态栏 / 外部工具调用
@@ -158,8 +185,11 @@ struct Outcome {
 
 struct Snapshot {
     preedit: String,
+    /// 当前页的候选（最多 PAGE_SIZE 条）
     cands: Vec<String>,
     sel: usize,
+    has_prev: bool,
+    has_next: bool,
 }
 
 impl Snapshot {
@@ -168,6 +198,8 @@ impl Snapshot {
             preedit: String::new(),
             cands: Vec::new(),
             sel: 0,
+            has_prev: false,
+            has_next: false,
         }
     }
 }
@@ -180,18 +212,15 @@ impl Outcome {
             ui: None,
         }
     }
-    fn eat() -> Outcome {
-        Outcome {
-            consumed: true,
-            commit: None,
-            ui: None,
-        }
-    }
 }
 
 struct CtxInner {
+    /// 中文：拼音解码
     engine: Engine,
-    sel: usize,
+    /// 英文：前缀补全（中文模式下始终为空，切换时两边一起清）
+    en: en::EnEngine,
+    /// 候选页码。中文候选最多 128 条，一屏只放 9 条，需翻页
+    page: usize,
     focused: bool,
     /// 当前焦点是密码框：全键透传
     sensitive: bool,
@@ -200,6 +229,15 @@ struct CtxInner {
     /// 上一次「按下」是否被消费。松开事件跟着它走，避免「按下吞了、松开没吞」
     /// 导致客户端把字符又插进缓冲区。
     last_consumed: bool,
+}
+
+impl CtxInner {
+    /// 两个引擎互斥，切换中英 / 放弃组字时一起清，避免残留串串味
+    fn reset_all(&mut self) {
+        self.engine.reset();
+        self.en.reset();
+        self.page = 0;
+    }
 }
 
 struct InputContext {
@@ -217,7 +255,8 @@ impl InputContext {
             global,
             inner: Mutex::new(CtxInner {
                 engine,
-                sel: 0,
+                en: en::EnEngine::new(),
+                page: 0,
                 focused: false,
                 sensitive: false,
                 shift_pending: false,
@@ -227,10 +266,7 @@ impl InputContext {
     }
 
     fn sync_variant(&self) {
-        let v = match self.global.inner.lock() {
-            Ok(g) => g.variant,
-            Err(_) => return,
-        };
+        let v = self.global.variant();
         if let Ok(mut st) = self.inner.lock() {
             st.engine.set_variant(v);
         }
@@ -263,11 +299,42 @@ impl InputContext {
             return Outcome::ignore();
         }
 
+        let ctrl = (state & ST_CTRL) != 0;
+        let shift = (state & ST_SHIFT) != 0;
+
         // Ctrl+Space 切换中英（先于其它判断，避免空格被当成上屏）
-        if keyval == KS_SPACE && (state & ST_CTRL) != 0 {
+        if ctrl && keyval == KS_SPACE {
+            st.shift_pending = false;
+            st.reset_all();
+            self.global.toggle();
+            st.last_consumed = true;
+            return Outcome {
+                consumed: true,
+                commit: None,
+                ui: Some(Snapshot::empty()),
+            };
+        }
+
+        // Ctrl+Shift+F 简繁切换（与 fcitx5 一致）
+        if ctrl && shift && (keyval == 'f' as u32 || keyval == 'F' as u32) {
+            let v = self.global.toggle_variant();
+            st.engine.set_variant(v);
+            st.page = 0;
             st.shift_pending = false;
             st.last_consumed = true;
-            return Outcome::eat();
+            let snap = snapshot(&st);
+            return Outcome {
+                consumed: true,
+                commit: None,
+                ui: Some(snap),
+            };
+        }
+
+        // 其它 Ctrl 组合一律透传：否则 Ctrl+C / Ctrl+V 会被当成字母吃掉
+        if ctrl {
+            st.shift_pending = false;
+            st.last_consumed = false;
+            return Outcome::ignore();
         }
 
         // Shift 单击切换中英：这里只记账，松开时再决定
@@ -278,28 +345,28 @@ impl InputContext {
         }
         st.shift_pending = false;
 
-        let chinese = self.global.chinese();
-        let composing = st.engine.active();
+        let out = if self.global.chinese() {
+            key_zh(&mut st, keyval)
+        } else {
+            key_en(&mut st, keyval, state)
+        };
+        st.last_consumed = out.consumed;
+        out
+    }
+}
 
-        // 英文模式下不组字，一律透传（与 Wayland 前端默认行为一致）
-        if !chinese {
-            st.last_consumed = false;
-            return Outcome::ignore();
-        }
+/// 中文模式的按键处理：组字、候选、翻页
+fn key_zh(st: &mut CtxInner, keyval: u32) -> Outcome {
+    let composing = st.engine.active();
 
-        // ---- 组字中 ----
-        if composing {
-            // 空格 / 回车：提交首候选
-            if keyval == KS_SPACE || keyval == KS_RETURN {
-                let text = st
-                    .engine
-                    .cands
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| st.engine.input.clone());
+    if composing {
+        match keyval {
+            // 空格 / 回车：提交当前页首候选
+            KS_SPACE | KS_RETURN => {
+                let text =
+                    pick(st.page * PAGE_SIZE, &st.engine.cands).unwrap_or_else(|| st.engine.input.clone());
                 st.engine.reset();
-                st.sel = 0;
-                st.last_consumed = true;
+                st.page = 0;
                 return Outcome {
                     consumed: true,
                     commit: Some(text),
@@ -307,35 +374,49 @@ impl InputContext {
                 };
             }
             // Esc：放弃这次组字
-            if keyval == KS_ESCAPE {
+            KS_ESCAPE => {
                 st.engine.reset();
-                st.sel = 0;
-                st.last_consumed = true;
+                st.page = 0;
                 return Outcome {
                     consumed: true,
                     commit: None,
                     ui: Some(Snapshot::empty()),
                 };
             }
-            // 退格
-            if keyval == KS_BACKSPACE {
+            KS_BACKSPACE => {
                 st.engine.backspace();
-                st.sel = 0;
-                let snap = snapshot(&st);
-                st.last_consumed = true;
+                st.page = 0;
                 return Outcome {
                     consumed: true,
                     commit: None,
-                    ui: Some(snap),
+                    ui: Some(snapshot(st)),
                 };
             }
-            // 数字 1-9 选词
-            if (0x31..=0x39).contains(&keyval) {
-                let idx = (keyval - 0x31) as usize;
-                if let Some(w) = st.engine.cands.get(idx).cloned() {
+            // 翻页：到边界就吞键不动作（与 fcitx5 一致，不会把 - 漏给应用）
+            KS_MINUS | KS_PAGE_UP => {
+                st.page = st.page.saturating_sub(1);
+                return Outcome {
+                    consumed: true,
+                    commit: None,
+                    ui: Some(snapshot(st)),
+                };
+            }
+            KS_EQUAL | KS_PAGE_DOWN => {
+                if (st.page + 1) * PAGE_SIZE < st.engine.cands.len() {
+                    st.page += 1;
+                }
+                return Outcome {
+                    consumed: true,
+                    commit: None,
+                    ui: Some(snapshot(st)),
+                };
+            }
+            // 数字 1-9 选词：序号按当前页算，不是全局序号
+            0x31..=0x39 => {
+                let idx = st.page * PAGE_SIZE + (keyval - 0x31) as usize;
+                if let Some(w) = pick(idx, &st.engine.cands) {
                     st.engine.reset();
-                    st.sel = 0;
-                    st.last_consumed = true;
+                    st.page = 0;
                     return Outcome {
                         consumed: true,
                         commit: Some(w),
@@ -343,63 +424,141 @@ impl InputContext {
                     };
                 }
                 // 超出候选范围：不吞键
-                st.last_consumed = false;
                 return Outcome::ignore();
             }
+            _ => {}
         }
-
-        // 字母：进入或延续组字
-        if let Some(c) = ascii_letter(keyval) {
-            let forced_lower = (state & (ST_SHIFT | ST_CAPSLOCK)) == 0;
-            let ch = if forced_lower { c.to_ascii_lowercase() } else { c };
-            st.engine.push_char(ch.to_ascii_lowercase());
-            st.sel = 0;
-            let snap = snapshot(&st);
-            st.last_consumed = true;
-            return Outcome {
-                consumed: true,
-                commit: None,
-                ui: Some(snap),
-            };
-        }
-
-        // 标点等：不组字时透传；组字中若输入标点，先把候选上屏再透传
-        if composing {
-            let text = st
-                .engine
-                .cands
-                .first()
-                .cloned()
-                .unwrap_or_else(|| st.engine.input.clone());
-            st.engine.reset();
-            st.sel = 0;
-            st.last_consumed = false;
-            return Outcome {
-                consumed: false,
-                commit: Some(text),
-                ui: Some(Snapshot::empty()),
-            };
-        }
-
-        st.last_consumed = false;
-        Outcome::ignore()
     }
+
+    // 字母：进入或延续组字
+    if let Some(c) = ascii_letter(keyval) {
+        st.engine.push_char(c.to_ascii_lowercase());
+        st.page = 0;
+        return Outcome {
+            consumed: true,
+            commit: None,
+            ui: Some(snapshot(st)),
+        };
+    }
+
+    // 标点等：组字中先把候选上屏，再让应用自己处理这个键
+    if composing {
+        let text =
+            pick(st.page * PAGE_SIZE, &st.engine.cands).unwrap_or_else(|| st.engine.input.clone());
+        st.engine.reset();
+        st.page = 0;
+        return Outcome {
+            consumed: false,
+            commit: Some(text),
+            ui: Some(Snapshot::empty()),
+        };
+    }
+
+    Outcome::ignore()
 }
 
-fn snapshot(st: &CtxInner) -> Snapshot {
-    let mut cands = st.engine.cands.clone();
-    if st.sel < cands.len() {
-        // 让首候选与当前高亮一致，客户端据此画选中态
-        if st.sel > 0 {
-            let w = cands.remove(st.sel);
-            cands.insert(0, w);
+/// 英文模式的按键处理：前缀补全 + 候选窗，与中文共用同一套 UI 流程
+fn key_en(st: &mut CtxInner, keyval: u32, state: u32) -> Outcome {
+    if st.en.active() {
+        match keyval {
+            // 空格确认补全，但空格本身不吞——「hel␣」应得到「hello␣」
+            KS_SPACE => {
+                let text = st.en.cands.first().cloned().unwrap_or_else(|| st.en.raw());
+                st.en.reset();
+                st.page = 0;
+                return Outcome {
+                    consumed: false,
+                    commit: Some(text),
+                    ui: Some(Snapshot::empty()),
+                };
+            }
+            // 回车上屏「我刚敲的字母」，回车本身也交给应用
+            KS_RETURN => {
+                let text = st.en.raw();
+                st.en.reset();
+                st.page = 0;
+                return Outcome {
+                    consumed: false,
+                    commit: Some(text),
+                    ui: Some(Snapshot::empty()),
+                };
+            }
+            KS_ESCAPE => {
+                st.en.reset();
+                st.page = 0;
+                return Outcome {
+                    consumed: true,
+                    commit: None,
+                    ui: Some(Snapshot::empty()),
+                };
+            }
+            KS_BACKSPACE => {
+                st.en.backspace(PAGE_SIZE);
+                return Outcome {
+                    consumed: true,
+                    commit: None,
+                    ui: Some(snapshot(st)),
+                };
+            }
+            0x31..=0x39 => {
+                let idx = (keyval - 0x31) as usize;
+                if let Some(w) = pick(idx, &st.en.cands) {
+                    st.en.reset();
+                    st.page = 0;
+                    return Outcome {
+                        consumed: true,
+                        commit: Some(w),
+                        ui: Some(Snapshot::empty()),
+                    };
+                }
+                return Outcome::ignore();
+            }
+            _ => {}
         }
     }
-    Snapshot {
-        preedit: st.engine.input.clone(),
-        cands,
-        sel: 0,
+
+    if let Some(c) = char::from_u32(keyval).filter(|c| c.is_ascii_alphabetic()) {
+        st.en.set_caps((state & ST_CAPSLOCK) != 0);
+        st.en.push_char(c, PAGE_SIZE);
+        st.page = 0;
+        return Outcome {
+            consumed: true,
+            commit: None,
+            ui: Some(snapshot(st)),
+        };
     }
+
+    Outcome::ignore()
+}
+
+fn pick(idx: usize, cands: &[String]) -> Option<String> {
+    cands.get(idx).cloned()
+}
+
+/// 取一次 UI 快照。中文按页切片，英文本来就只够一页。
+fn snapshot(st: &CtxInner) -> Snapshot {
+    if st.engine.active() {
+        let total = st.engine.cands.len();
+        let start = (st.page * PAGE_SIZE).min(total);
+        let end = (start + PAGE_SIZE).min(total);
+        return Snapshot {
+            preedit: st.engine.input.clone(),
+            cands: st.engine.cands[start..end].to_vec(),
+            sel: 0,
+            has_prev: st.page > 0,
+            has_next: end < total,
+        };
+    }
+    if st.en.active() {
+        return Snapshot {
+            preedit: st.en.preedit().to_string(),
+            cands: st.en.cands.clone(),
+            sel: 0,
+            has_prev: false,
+            has_next: false,
+        };
+    }
+    Snapshot::empty()
 }
 
 fn ascii_letter(keyval: u32) -> Option<char> {
@@ -444,7 +603,7 @@ impl InputContext {
     async fn focus_out(&self) {
         if let Ok(mut st) = self.inner.lock() {
             st.focused = false;
-            st.engine.reset();
+            st.reset_all();
             st.shift_pending = false;
         }
         self.global.log(&format!("ic{} FocusOut", self.id));
@@ -452,8 +611,7 @@ impl InputContext {
 
     async fn reset(&self) {
         if let Ok(mut st) = self.inner.lock() {
-            st.engine.reset();
-            st.sel = 0;
+            st.reset_all();
             st.shift_pending = false;
             st.last_consumed = false;
         }
@@ -480,7 +638,7 @@ impl InputContext {
         if let Ok(mut st) = self.inner.lock() {
             st.sensitive = sensitive;
             if sensitive {
-                st.engine.reset();
+                st.reset_all();
             }
         }
         self.global
@@ -514,11 +672,10 @@ impl InputContext {
         let out = self.handle_key(keyval, state, release);
 
         if self.shift_released(keyval, release) {
-            // Shift 单击松开：切换中英，并清掉组字
+            // Shift 单击松开：切换中英，并清掉两边组字
             self.global.toggle();
             if let Ok(mut st) = self.inner.lock() {
-                st.engine.reset();
-                st.sel = 0;
+                st.reset_all();
             }
         }
 
@@ -544,32 +701,39 @@ impl InputContext {
         out.consumed
     }
 
-    async fn prev_page(&self) {}
+    /// 客户端点候选窗的翻页按钮时调用。信号只能从方法里发，所以这里注入
+    /// emitter —— 空实现会让微信/GTK 的翻页箭头点了没反应。
+    async fn prev_page(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) {
+        self.shift_page(&emitter, false).await;
+    }
 
-    async fn next_page(&self) {}
+    async fn next_page(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) {
+        self.shift_page(&emitter, true).await;
+    }
 
-    async fn select_candidate(&self, index: i32) {
+    async fn select_candidate(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        index: i32,
+    ) {
         let text = {
             let mut st = match self.inner.lock() {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            match st.engine.cands.get(index.max(0) as usize).cloned() {
-                Some(w) => {
-                    st.engine.reset();
-                    st.sel = 0;
-                    Some(w)
-                }
-                None => None,
+            // 客户端给的是「当前页内序号」，不是全局序号
+            let zh_idx = st.page * PAGE_SIZE + index.max(0) as usize;
+            let t = pick(zh_idx, &st.engine.cands).or_else(|| pick(index.max(0) as usize, &st.en.cands));
+            if t.is_some() {
+                st.reset_all();
             }
+            t
         };
         if let Some(t) = text {
             self.global
                 .log(&format!("ic{} 选词 {index} -> {:?}", self.id, t));
-            // 选词信号只能通过 emitter 发，这里借助一个临时 emitter 不可行，
-            // 交给调用方在 process_key_event / 外部路径处理。
-            // SelectCandidate 由客户端主动调用时，用 pending 队列。
-            self.queue_commit(t);
+            self.push_ui(&emitter, Snapshot::empty()).await;
+            let _ = Self::commit_string(&emitter, &t).await;
         }
     }
 
@@ -604,10 +768,24 @@ impl InputContext {
         }
     }
 
-    fn queue_commit(&self, _text: String) {
-        // 客户端主动 SelectCandidate 的路径暂未接线（fcitx5-qt 在
-        // ClientSideInputPanel 模式下很少调用它，选词走 ProcessKeyEvent）。
-        // 保留占位，避免客户端报 UnknownMethod。
+    /// 翻页：中文候选最多 128 条而一屏只放 9 条，边界处不动（不循环）
+    async fn shift_page(&self, emitter: &SignalEmitter<'_>, forward: bool) {
+        let snap = {
+            let mut st = match self.inner.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let total = st.engine.cands.len();
+            if forward {
+                if (st.page + 1) * PAGE_SIZE < total {
+                    st.page += 1;
+                }
+            } else {
+                st.page = st.page.saturating_sub(1);
+            }
+            snapshot(&st)
+        };
+        self.push_ui(emitter, snap).await;
     }
 
     async fn push_ui(&self, emitter: &SignalEmitter<'_>, snap: Snapshot) {
@@ -625,7 +803,7 @@ impl InputContext {
         let cands: Vec<(String, String)> = snap
             .cands
             .iter()
-            .take(9)
+            .take(PAGE_SIZE)
             .map(|c| (c.clone(), String::new()))
             .collect();
         let hint = if cands.is_empty() { 0 } else { LAYOUT_HORIZONTAL };
@@ -638,8 +816,8 @@ impl InputContext {
             cands,
             snap.sel as i32,
             hint,
-            false,
-            false,
+            snap.has_prev,
+            snap.has_next,
         )
         .await;
     }
