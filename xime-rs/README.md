@@ -97,6 +97,30 @@ xime --verbose &             # 看日志确认 "activate" 与 "keymap 已解析"
 软光栅绘制，鼠标事件照常接收——候选窗是穿透的，设置窗不必穿透。加一份
 `~/.config/xime/config.toml` 读写即可。这是产品化方向，不动摇零依赖的架构前提。
 
+### 第二条路：DBus 前端（`xime --dbus`）
+
+上面表格里打 ❌ 的几种情况——GNOME、X11/XWayland、以及只认 fcitx 的程序
+（微信、WPS、Electron）——可以靠 `--dbus` 覆盖。它根本不碰 Wayland 协议，
+而是抢下 fcitx5 的服务名 `org.fcitx.Fcitx5`，让程序**内置的** fcitx5-qt /
+fcitx5-gtk 客户端连上来：
+
+```sh
+xime --dbus --verbose     # 需要先停掉 fcitx5，服务名唯一
+```
+
+| 场景 | Wayland 前端 | `--dbus` 前端 |
+|---|---|---|
+| Hyprland / sway / KDE | ✅ | ✅ |
+| GNOME Wayland | ❌ Mutter 无该协议 | ✅ GTK / Qt 应用可用 |
+| X11 会话 / XWayland 应用 | ❌ | ✅ |
+| 微信 / WPS / Electron | ❌ | ✅ **已实测** |
+
+这条路有个意外的好处：候选窗**由应用自己画**（Qt 客户端恒声明
+`ClientSideInputPanel`），所以 xime 不需要 atlas、render、shm、popup 任何代码——
+恰好是 Wayland 前端最费劲的那一半。代价是它和 fcitx5 互斥，且系统里要有
+`fcitx5-qt` / `fcitx5-gtk` 模块（只装模块，不需要跑 fcitx5 守护进程）。
+协议细节与实测记录见 `docs/fcitx5-dbus-frontend.md`。
+
 ---
 
 ## 三、架构
@@ -622,9 +646,9 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 | 英文只用一万高频词 | 词表取自公开的词频统计，不含专有名词与专业术语 | 罕见词、人名、代码标识符补不出来，按回车照原样上屏即可 |
 | 英文不纠错、不预测下一词 | 刻意不做（见第六节） | 打错字不会被改正，也不会替用户补句首大写 |
 | Plasma 下必须由 KWin 拉起 | 只有 KWin 交出的那条连接才被放行绑定 `zwp_input_method_v2` | 手工 `xime &` 通常绑不上；走桌面条目或 `xime-setup` |
-| 无法在 X11/XWayland 应用里用 | 只实现 `zwp_input_method_v2`；XWayland 客户端走 XIM，xime 没有那套桥 |
+| 无法在 X11/XWayland 应用里用（Wayland 前端） | 只实现 `zwp_input_method_v2`；XWayland 客户端走 XIM，xime 没有那套桥 | 改用 `xime --dbus` 可覆盖 |
 | Qt 应用设了 `QT_IM_MODULE=fcitx` 时用不了 xime | Qt 会走 fcitx 的 DBus 平台插件，**根本不创建 `zwp_text_input_v3`**，xime 的提交无处可送 | 典型发行版（如 Omarchy）默认全局设了该变量；要用 xime 需在启动应用时清空它 |
-| 微信（Linux Universal）里用不了 xime | 它虽是 Qt6 静态链接、确实创建 `zwp_text_input_v3` 并发送 enable/content_type，但聊天框不消费传回来的 `QInputMethodEvent`（实测 commit 已发出、界面无反应） | 微信必须保留 `QT_IM_MODULE=fcitx` 走 fcitx5；切到 xime 后微信没有可用输入法。想根治需另加 fcitx5 DBus 前端，见 `docs/fcitx5-dbus-frontend.md` |
+| 微信里用不了 xime（Wayland 前端） | 它虽是 Qt6 静态链接、确实创建 `zwp_text_input_v3`、xime 的 commit 也确实发出，但聊天框不插入文字；同样动作走 DBus 就正常，说明断在协议中继而非应用 | 改用 `xime --dbus`，已实测可打出中文（输入框实测为 `n你好`）；Wayland 前端下微信仍需走 fcitx5 |
 | 简繁只有 OpenCC `s2t` 一种口径 | 未生成 `s2tw`/`s2hk` 变体表（用词差异大，如 软件/軟體） | 台湾/香港用词习惯需另加一列转换表，接口已按 `Variant` 预留 |
 
 ---
