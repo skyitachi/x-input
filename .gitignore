@@ -56,3 +56,9 @@ __pycache__/
 #   xime-rs/dist/*.png           README 里引用的候选窗样本
 #   wayland-ime/docs/candidate-bar.bmp  README 里引用的候选条截图
 # 若想改成"一律不入库、构建前先 make dict"，去掉上面注释并把这几条加为忽略。
+
+# ---------- 候选窗调参过程图 ----------
+# README 引用的是 dist/popup-<形态>.png 与 dist/themes/*.png 这些成品样本；
+# 下面这些是试字号、试 hinting 方案时顺手截的对比图，随手上传只会让仓库变脏。
+xime-rs/dist/popup-2[0-9]px.png
+xime-rs/dist/popup/
