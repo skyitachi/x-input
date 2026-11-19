@@ -975,8 +975,9 @@ fn is_shift_key(key: u32) -> bool {
     key == 42 || key == 54
 }
 
-/// keysym → 中文标点
-fn punct_of(sym: u32) -> Option<&'static str> {
+/// keysym → 中文标点。DBus 前端（`fcitx_dbus`）复用同一张表，
+/// 两条路径的中文标点行为才不会一个全角一个半角。
+pub(crate) fn punct_of(sym: u32) -> Option<&'static str> {
     Some(match sym {
         0x2c => "，",
         0x2e => "。",

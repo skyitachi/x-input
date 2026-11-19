@@ -264,6 +264,23 @@ def case_ctrl(bus):
     check("切成密码框时丢弃残留组字", before and mixed.last_ui()["preedit"] == "")
 
 
+def case_punct(ctx):
+    print("\n[6] 中文标点全角")
+    ctx.clear_events()
+    ctx.type("nihao")
+    ctx.press(0x2E)  # .
+    check("组字中打句号：候选先上屏再跟全角句号", ctx.commits == ["你好。"], str(ctx.commits))
+    check("句号被消费", ctx.last_ui()["cands"] == [])
+
+    ctx.clear_events()
+    ctx.press(0x2C)  # ,
+    check("空组字打逗号：直接上屏全角逗号", ctx.commits == ["，"], str(ctx.commits))
+
+    ctx.clear_events()
+    ctx.press(0x3F)  # ?
+    check("问号转全角", ctx.commits == ["？"], str(ctx.commits))
+
+
 def main():
     bus = dbus.SessionBus()
     print("对 org.fcitx.Fcitx5 跑 DBus 前端自测…")
@@ -274,6 +291,7 @@ def main():
         case_english(ctx)
         case_variant(ctx)
         case_ctrl(bus)
+        case_punct(ctx)
     finally:
         try:
             ctx.iface.FocusOut()

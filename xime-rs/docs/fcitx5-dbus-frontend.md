@@ -526,17 +526,26 @@ $ hyprctl binds -j | jq '.[] | select(.key=="SPACE")'
 这类环境下用 **Shift 单击**（`shift_pending` + 松开判定）切中英，它是唯一
 不经过合成器绑定的路径。真 fcitx5 在同一台机器上同样切不动，不是 xime 的问题。
 
-### 13.6 无人值守回归
+### 13.6 中文标点
 
-`tools/dbus-selftest.py` 把上述行为固化成 40 项断言，不需要人敲键、不需要看屏幕：
+第一版把标点直接交给应用，`nihao.` 得到的是半角 `你好.`，与 Wayland 前端不一致。
+现在两条路共用 `main.rs` 的 `punct_of()`（改成 `pub(crate)`）：组字中先提交
+候选、再提交全角标点并吞掉按键；没有组字时直接出全角标点。
+
+`-` / `=` / PageUp / PageDown 的翻页分支必须在标点分支**之前**，否则减号会被
+当成标点吞掉，翻页也就永远不生效。
+
+### 13.7 无人值守回归
+
+`tools/dbus-selftest.py` 把上述行为固化成 44 项断言，不需要人敲键、不需要看屏幕：
 
 ```sh
-python3 tools/dbus-selftest.py       # 40/40 通过
+python3 tools/dbus-selftest.py       # 44/44 通过
 python3 tools/dbus-selftest.py -v    # 打印每步 UI 快照
 ```
 
 覆盖：翻页内容不重叠、页内序号选词、末页不越界、`PrevPage`/`NextPage` 方法、
-英文补全与空格透传、`Ctrl+Letter` 透传、简繁切换、密码框全透传。
+英文补全与空格透传、`Ctrl+Letter` 透传、简繁切换、密码框全透传、中文标点。
 
 真实按键侧另外验证（`uinput-inject` + `gtk3-probe.py` + 微信截图）：
 
@@ -544,6 +553,7 @@ python3 tools/dbus-selftest.py -v    # 打印每步 UI 快照
 |---|---|
 | GTK：`nihao` → `=` → `1` | 缓冲区 `尼好`（第 2 页首条）✅ |
 | GTK：Shift 单击 → `hel␣` | 缓冲区 `help `（空格保留）✅ |
+| GTK：`nihao.` | 缓冲区 `你好。` ✅ |
 | 微信：`nihao` 第 1 页 | 9 条候选，`你好` 打头 ✅ |
 | 微信：`=` 第 2 页 | `尼好 你耗 妮好 妳号 泥号 尼号 妮号 呢灏 呢豪` ✅ |
 | 微信：第 2 页按 `1` | 输入框得到干净的 `尼好`，候选窗收起 ✅ |

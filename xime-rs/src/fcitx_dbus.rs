@@ -441,19 +441,25 @@ fn key_zh(st: &mut CtxInner, keyval: u32) -> Outcome {
         };
     }
 
-    // 标点等：组字中先把候选上屏，再让应用自己处理这个键
-    if composing {
-        let text =
-            pick(st.page * PAGE_SIZE, &st.engine.cands).unwrap_or_else(|| st.engine.input.clone());
+    // 中文标点：与 Wayland 前端共用同一张映射表，组字中先把候选上屏。
+    // 注意 `-` / `=` / PageUp / PageDown 在上面已作为翻页键处理掉了，
+    // 这里不会被误判成标点。
+    if let Some(p) = crate::punct_of(keyval) {
+        let cand = if composing {
+            pick(st.page * PAGE_SIZE, &st.engine.cands).unwrap_or_else(|| st.engine.input.clone())
+        } else {
+            String::new()
+        };
         st.engine.reset();
         st.page = 0;
         return Outcome {
-            consumed: false,
-            commit: Some(text),
+            consumed: true,
+            commit: Some(format!("{cand}{p}")),
             ui: Some(Snapshot::empty()),
         };
     }
 
+    // 其它键：不组字时透传，交给应用自己处理
     Outcome::ignore()
 }
 
