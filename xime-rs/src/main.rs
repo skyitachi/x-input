@@ -1,3 +1,4 @@
+mod config;
 mod dict;
 mod en;
 mod engine;
@@ -61,14 +62,26 @@ struct Xime {
     en: en::EnEngine,
     /// 英文模式下完全透传按键，不做补全（回归「能用就行」的做法）
     en_passthrough: bool,
+    /// 当前焦点是密码框（content_purpose=password/pin）：任何模式都全键透传
+    field_passthrough: bool,
+    /// 当前焦点是终端（content_purpose=terminal）：英文模式退化为纯透传，
+    /// 中文模式照常组字——终端里英文补全只有坏处
+    terminal_purpose: bool,
     /// Shift 按下但还没松开：松开时才决定是切换中英还是输入大写字母
     shift_pending: bool,
+    /// 调试钩子（XIME_SELFTEST）：激活后自动打一段拼音并上屏，只跑一次
+    selftest_done: bool,
     inline_cands: bool,
     verbose: bool,
     style: popup::Style,
     /// 输出形态（简体 / 繁体），运行时可切
     variant: zh::Variant,
     running: bool,
+    /// 启动时的命令行参数：配置热重载后要用它重新叠加 CLI 覆盖
+    args: Vec<String>,
+    /// 配置文件指纹与上次检查时间（热重载用）
+    cfg_stamp: u64,
+    cfg_checked: Option<std::time::Instant>,
 }
 
 impl Xime {
@@ -79,6 +92,7 @@ impl Xime {
         variant: zh::Variant,
         start_english: bool,
         en_passthrough: bool,
+        args: Vec<String>,
     ) -> Option<Xime> {
         let conn = match Conn::connect() {
             Ok(c) => c,
@@ -118,12 +132,18 @@ impl Xime {
             chinese: !start_english,
             en: en::EnEngine::new(),
             en_passthrough,
+            field_passthrough: false,
+            terminal_purpose: false,
             shift_pending: false,
+            selftest_done: false,
             inline_cands,
             verbose,
             style,
             variant,
             running: true,
+            args,
+            cfg_stamp: config::stamp(),
+            cfg_checked: None,
         })
     }
 
@@ -174,7 +194,7 @@ impl Xime {
             return Ok(());
         }
         if self.im != 0 && m.obj == self.im {
-            return self.on_im(m.opcode);
+            return self.on_im(m.opcode, &mut m);
         }
         if self.grab != 0 && m.obj == self.grab {
             return self.on_grab(m.opcode, &mut m);
@@ -234,7 +254,7 @@ impl Xime {
         Ok(())
     }
 
-    fn on_im(&mut self, opcode: u16) -> std::io::Result<()> {
+    fn on_im(&mut self, opcode: u16, m: &mut Incoming) -> std::io::Result<()> {
         match opcode {
             0 => {
                 // activate
@@ -256,6 +276,24 @@ impl Xime {
                 self.popup_hide()?;
                 proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
                 proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+            }
+            4 => {
+                // content_type(hint, purpose)：应用声明的输入框类型。
+                // password=8 / pin=9 → 全键透传；terminal=14 → 英文态透传。
+                let hint = m.args.u32();
+                let purpose = m.args.u32();
+                let pw = purpose == 8 || purpose == 9;
+                let term = purpose == 14;
+                self.log(&format!("content_type: hint={hint} purpose={purpose}"));
+                if pw && !self.field_passthrough {
+                    // 进入密码框：清掉组字残留，避免半截拼音/补全突然上屏
+                    self.engine.reset();
+                    self.en.reset();
+                    self.popup_hide()?;
+                }
+                self.field_passthrough = pw;
+                self.terminal_purpose = term;
+                self.selftest()?;
             }
             5 => {
                 // done：每收到一次，可用的 commit serial 上限加一
@@ -356,6 +394,11 @@ impl Xime {
         };
 
         if !pressed {
+            // 密码框：按下与松开都原样转发，修饰键状态也不能被截留
+            if self.field_passthrough {
+                self.forward_key(time, key, state)?;
+                return Ok(());
+            }
             if idx < CONSUMED_MAX && self.consumed[idx] {
                 self.consumed[idx] = false;
                 // Shift 按下又原样松开、中间没敲别的键：这时才确定是「切换中英」。
@@ -373,6 +416,12 @@ impl Xime {
         let has_cmd = self.mods_depressed
             & (keymap::MASK_CONTROL | keymap::MASK_MOD1 | keymap::MASK_MOD4)
             != 0;
+
+        // 密码框（按下路径）：不进任何组字/切换逻辑，直接透传
+        if self.field_passthrough {
+            self.forward_key(time, key, state)?;
+            return Ok(());
+        }
 
         // Shift 按下：先挂起，等松开时才知道是修饰键还是切换键
         if is_shift_key(key) && !has_cmd {
@@ -517,8 +566,8 @@ impl Xime {
         let idx = key as usize;
         let cap = self.style.max_items();
 
-        // 完全透传模式：不组字、不弹候选，字母直接进应用
-        if self.en_passthrough {
+        // 完全透传模式（显式参数或终端焦点）：不组字、不弹候选，字母直接进应用
+        if self.en_passthrough || self.terminal_purpose {
             self.forward_key(time, key, state)?;
             return Ok(());
         }
@@ -530,30 +579,21 @@ impl Xime {
                 self.consume_key(idx);
             }
             x if x == b' ' as u32 && self.en.active() => {
-                // 空格上屏首选；缓冲为空时是真空格，交给应用
+                // 空格确认补全/上屏缓冲词，随后空格本身照常发给应用——
+                // 「hel<空格>」得到的是「hello 」而不是把空格吞掉
                 self.commit_selection()?;
-                self.consume_key(idx);
+                self.forward_key(time, key, state)?;
             }
             keymap::KS_RETURN if self.en.active() => {
-                // 回车要的是「我刚敲的字母」，不是补全
+                // 回车上屏「我刚敲的字母」，并把回车本身也转发——
+                // 否则 sudo 密码输完按回车，应用永远收不到提交
                 let t = self.en.raw();
                 self.commit_text(&t)?;
-                self.consume_key(idx);
+                self.forward_key(time, key, state)?;
             }
             keymap::KS_ESCAPE if self.en.active() => {
                 self.en.reset();
                 self.refresh()?;
-                self.consume_key(idx);
-            }
-            x if (b'1' as u32..=b'9' as u32).contains(&x) && self.en.active() => {
-                let pick = (x - b'1' as u32) as usize;
-                let text = self
-                    .en
-                    .cands
-                    .get(pick)
-                    .cloned()
-                    .unwrap_or_else(|| self.en.raw());
-                self.commit_text(&text)?;
                 self.consume_key(idx);
             }
             _ => {
@@ -621,10 +661,39 @@ impl Xime {
         Ok(())
     }
 
+    /// 调试钩子：`XIME_SELFTEST=nihao` 时，第一个文本框激活后自动把这段拼音
+    /// 打进引擎并上屏一次。用来在没有真人敲键的情况下验证
+    /// 「组字 → 候选 → commit_string → 客户端」这条链路到底断在哪一环。
+    fn selftest(&mut self) -> std::io::Result<()> {
+        let Ok(s) = std::env::var("XIME_SELFTEST") else {
+            return Ok(());
+        };
+        if self.selftest_done || s.is_empty() {
+            return Ok(());
+        }
+        self.selftest_done = true;
+        if !self.chinese {
+            self.log("selftest: 英文模式，钩子不生效");
+            return Ok(());
+        }
+        self.log(&format!("selftest: 输入 \"{s}\""));
+        for ch in s.chars() {
+            self.engine.push_char(ch);
+        }
+        self.refresh()?;
+        self.log(&format!(
+            "selftest: 候选 {:?}",
+            self.engine.cands.iter().take(3).collect::<Vec<_>>()
+        ));
+        self.commit_selection()?;
+        Ok(())
+    }
+
     fn commit_text(&mut self, text: &str) -> std::io::Result<()> {
         if self.im == 0 {
             return Ok(());
         }
+        self.log(&format!("commit \"{text}\" (serial={})", self.done_serial));
         if !text.is_empty() {
             proto::im_commit_string(&mut self.conn, self.im, text)?;
         }
@@ -636,10 +705,36 @@ impl Xime {
         Ok(())
     }
 
+    /// 配置文件改动后热重载外观。每 400ms 最多 stat 一次，代价可以忽略。
+    ///
+    /// 只重算样式，不碰引擎状态——换主题不该打断正在进行的组字。
+    /// 下一次 refresh 会用新度量重新 measure/ensure_buffer，尺寸变了自动重建缓冲。
+    fn maybe_reload_config(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(t) = self.cfg_checked {
+            if now.duration_since(t).as_millis() < 400 {
+                return;
+            }
+        }
+        self.cfg_checked = Some(now);
+        let stamp = config::stamp();
+        if stamp == self.cfg_stamp {
+            return;
+        }
+        self.cfg_stamp = stamp;
+        self.style = parse_style(&self.args);
+        self.log(&format!(
+            "配置已重载：主题={} 形态={}",
+            self.style.theme.name,
+            self.style.layout.name()
+        ));
+    }
+
     fn refresh(&mut self) -> std::io::Result<()> {
         if self.im == 0 {
             return Ok(());
         }
+        self.maybe_reload_config();
         if !self.chinese {
             return self.refresh_en();
         }
@@ -816,8 +911,10 @@ impl Xime {
 
     fn forward_key(&mut self, time: u32, key: u32, state: u32) -> std::io::Result<()> {
         if self.vk == 0 {
+            self.log(&format!("vk 未就绪，丢弃按键 {key}"));
             return Ok(());
         }
+        self.log(&format!("vk 回注 key={key} state={state}"));
         proto::vk_modifiers(
             &mut self.conn,
             self.vk,
@@ -916,10 +1013,13 @@ fn usage() {
     println!("  --inline-candidates 把候选塞进 preedit 由应用字体渲染（不建候选窗）");
     println!("  --popup FORM        候选窗形态: horizontal(默认) | vertical | grid");
     println!("  --popup-cols N      网格形态的列数（默认 3）");
-    println!("  --theme NAME        候选窗配色: light(默认) | dark");
+    println!("  --theme NAME        候选窗主题: light(默认) | dark | fcitx:NAME | 主题文件路径");
+    println!("                      例: --theme fcitx:omarchy  直接用 fcitx5 的主题");
+    println!("  --list-themes       列出能找到的 fcitx5 主题");
+    println!("  --dump-theme        打印当前生效主题的颜色与度量（排查配置用）");
     println!("  --zh VARIANT        输出形态: hans(默认,简体) | hant(繁体)；运行中 Ctrl+Shift+F 切换");
-    println!("  --en                启动即英文模式（前缀补全 + 候选窗）");
-    println!("  --en-passthrough    英文模式不做补全，按键直接进应用");
+    println!("  --en                启动即英文模式（默认不出候选窗，按键直接进应用，与 fcitx5 一致）");
+    println!("  --en-completion     英文模式启用前缀补全 + 候选窗（旧行为，按需开启）");
     println!("  --check             诊断：检查协议可用性与接线状态");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
     println!("  --render-test PATH [拼音]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
@@ -936,8 +1036,17 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 }
 
 /// 从命令行组装候选窗样式
+///
+/// 顺序：全局配置（系统 → 用户 → XIME_THEME）先落地，命令行只覆盖显式指定的项。
 fn parse_style(args: &[String]) -> popup::Style {
-    let mut style = popup::Style::default();
+    let cfg = config::Settings::load();
+
+    let mut style = popup::Style {
+        layout: cfg.layout,
+        cols: cfg.cols,
+        dark: cfg.theme.dark,
+        theme: cfg.theme,
+    };
     if let Some(v) = flag_value(args, "--popup") {
         match popup::Layout::parse(&v) {
             Some(l) => style.layout = l,
@@ -957,11 +1066,17 @@ fn parse_style(args: &[String]) -> popup::Style {
         }
     }
     if let Some(v) = flag_value(args, "--theme") {
-        match v.as_str() {
-            "dark" => style.dark = true,
-            "light" => style.dark = false,
-            _ => {
-                eprintln!("xime: 未知配色 {v}（可选 light/dark）");
+        match config::resolve_theme(&v) {
+            Some(t) => {
+                style.dark = t.dark;
+                style.theme = t;
+            }
+            // 兼容旧写法：--theme light / dark 已在 resolve_theme 里处理，
+            // 走到这里说明名字既不是内置也不是文件，也不是已知 fcitx 主题
+            None => {
+                eprintln!(
+                    "xime: 未知主题 {v}\n  可用：light | dark | fcitx:NAME | /path/to/theme.conf"
+                );
                 std::process::exit(2);
             }
         }
@@ -981,6 +1096,38 @@ fn parse_variant(args: &[String]) -> zh::Variant {
         },
         None => zh::Variant::Hans,
     }
+}
+
+/** 列出能直接用的 fcitx5 主题 */
+fn list_themes() {
+    println!("内置主题: light, dark");
+    let themes = config::list_fcitx();
+    if themes.is_empty() {
+        println!("没有找到 fcitx5 主题（已查找 ~/.local/share/fcitx5/themes 与 /usr/share/fcitx5/themes）");
+        return;
+    }
+    println!("fcitx5 主题（--theme fcitx:名字 即可启用）:");
+    for (name, path) in themes {
+        println!("  {:<18} {}", name, path.display());
+    }
+}
+
+/** 打印当前生效的主题，排查配置问题时用 */
+fn dump_theme(s: &popup::Style) {
+    let t = &s.theme;
+    let m = &t.metrics;
+    println!("主题   {} ({})", t.name, if t.dark { "dark" } else { "light" });
+    println!("形态   {}  cols={}", s.layout.name(), s.cols);
+    println!("颜色   bg={} border={} text={} accent={} selected_text={}",
+        config::to_hex(t.colors.bg),
+        config::to_hex(t.colors.border),
+        config::to_hex(t.colors.text),
+        config::to_hex(t.colors.accent),
+        config::to_hex(t.colors.sel_text));
+    println!("度量   pad=({},{}) item_pad_x={} item_gap={} row_gap={}",
+        m.pad_x, m.pad_y, m.item_pad_x, m.item_gap, m.row_gap);
+    println!("       radius={} hl_radius={} hl_pad_y={} border_width={}",
+        m.radius, m.hl_radius, m.hl_pad_y, m.border_w);
 }
 
 fn main() {
@@ -1026,11 +1173,22 @@ fn main() {
         check(variant);
         return;
     }
+    if args.iter().any(|a| a == "--list-themes") {
+        list_themes();
+        return;
+    }
+    if args.iter().any(|a| a == "--dump-theme") {
+        dump_theme(&style);
+        return;
+    }
 
     let inline_cands = args.iter().any(|a| a == "--inline-candidates");
     let verbose = args.iter().any(|a| a == "--verbose");
 
-    let en_passthrough = args.iter().any(|a| a == "--en-passthrough");
+    // 英文模式默认「不出候选窗」：字母直接进应用，与 fcitx5 的英文态一致。
+    // 前缀补全改成显式开启（--en-completion），因为它会在每个词上打扰输入。
+    let en_completion = args.iter().any(|a| a == "--en-completion");
+    let en_passthrough = args.iter().any(|a| a == "--en-passthrough") || !en_completion;
 
     // 单实例：systemd、KWin、XDG autostart、手工启动都可能在拉起 xime，
     // 谁先拿到锁谁当输入法，后来者安静退出（退出码 0，免得 systemd 反复重启）。
@@ -1046,6 +1204,7 @@ fn main() {
         variant,
         english,
         en_passthrough,
+        args.clone(),
     ) {
         Some(x) => x,
         None => std::process::exit(1),
@@ -1260,7 +1419,7 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
             "已写出 {path}  {w}x{h}  形态 {}（{} 列）  配色 {}  字体 {}  候选 {} 条",
             style.layout.name(),
             style.cols,
-            if style.dark { "dark" } else { "light" },
+            style.theme.name.as_str(),
             label,
             shown.len()
         ),
