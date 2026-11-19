@@ -37,6 +37,9 @@ wayland-ime/.cache/
 __pycache__/
 *.pyc
 
+# tools/uinput-inject 是 cc 编译产物，源码在 tools/uinput-inject.c
+xime-rs/tools/uinput-inject
+
 # ---------- 编辑器 / 系统 ----------
 .DS_Store
 *.swp

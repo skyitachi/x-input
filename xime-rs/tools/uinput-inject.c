@@ -41,9 +41,10 @@ static int keycode_of(char c) {
     }
     if (c >= 'A' && c <= 'Z') return keycode_of((char)(c - 'A' + 'a'));
     if (c >= '0' && c <= '9') {
+        // 注意顺序按 '1'..'9','0' 排布，索引用 c - '1'，否则整体偏移一位
         static const int t[] = { KEY_1, KEY_2, KEY_3, KEY_4, KEY_5,
-                                 KEY_6, KEY_7, KEY_8, KEY_9, KEY_0 };
-        return t[c - '0'];
+                                 KEY_6, KEY_7, KEY_8, KEY_9 };
+        return c == '0' ? KEY_0 : t[c - '1'];
     }
     switch (c) {
     case ' ':  return KEY_SPACE;
