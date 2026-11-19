@@ -36,6 +36,21 @@ if [ ! -f "$src/src/dict_gen.h" ]; then
     python3 "$src/tools/mkdict.py"
 fi
 mkdir -p "$src/build"
-cc -O2 -I"$src/third_party" -I"$src/src" -o "$src/build/mkfont" \
-   "$src/tools/mkfont.c" "$src/src/dict.c" "$src/src/utf8.c" -lm
-"$src/build/mkfont" "$font" "$here/data/atlas.bin" 16 "$here/data/hant-chars.txt"
+
+# 优先用 mkfont-ft：构建期调系统 FreeType 做 hinting（等效 hintslight），
+# 和 fcitx5 走同一条光栅化路径。实测 18px 汉字有墨像素里 40.7% 完全实心，
+# 而 stb 不做 hinting 只有 32%，肉眼就是「比 fcitx 糊」。
+# 运行时不依赖 freetype——位图已经烘焙进二进制。
+if pkg-config --exists freetype2 2>/dev/null; then
+    echo "  字形用 FreeType hinting 烘焙"
+    cc -O2 -I"$src/src" $(pkg-config --cflags freetype2) -o "$src/build/mkfont-ft" \
+       "$src/tools/mkfont-ft.c" "$src/src/dict.c" "$src/src/utf8.c" \
+       $(pkg-config --libs freetype2) -lm
+    "$src/build/mkfont-ft" "$font" "$here/data/atlas.bin" 18 "$here/data/hant-chars.txt" light
+else
+    echo "  没有 freetype2 开发包，回退到 stb 烘焙（无 hinting，字会略糊）"
+    cc -O2 -I"$src/third_party" -I"$src/src" -o "$src/build/mkfont" \
+       "$src/tools/mkfont.c" "$src/src/dict.c" "$src/src/utf8.c" -lm
+    # 0.85 = 边缘压暗，26 = 低于该 alpha 的灰雾归零，用来补足没有 hinting 的短板
+    "$src/build/mkfont" "$font" "$here/data/atlas.bin" 18 "$here/data/hant-chars.txt" 0.85 26
+fi

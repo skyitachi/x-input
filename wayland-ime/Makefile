@@ -4,7 +4,7 @@ PKG_CONFIG  ?= pkg-config
 GEN         := build/gen
 OBJ         := build/obj
 BIN         := build/xime
-FONT_PX     ?= 16
+FONT_PX     ?= 22
 FONT        ?= $(shell sh scripts/find-font.sh 2>/dev/null)
 
 WL_CFLAGS   := $(shell $(PKG_CONFIG) --cflags wayland-client)

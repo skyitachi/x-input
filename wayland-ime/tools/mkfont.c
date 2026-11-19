@@ -4,16 +4,29 @@
  * 8bpp alpha 图集，输出成 C 源文件。这样运行时既不需要 freetype/fontconfig，
  * 也不需要携带 TTF，二进制内自带可显示汉字的最小字形集。
  *
- * 用法: mkfont <font.ttf|font.ttc> <out> [px] [extra_chars.txt]
+ * 用法: mkfont <font.ttf|font.ttc> <out> [px] [extra_chars.txt] [gamma] [black]
+ *
+ * gamma < 1 会压暗抗锯齿边缘（stem darkening），black 会把低于该 alpha 的灰雾
+ * 直接归零。两者合起来是为了弥补 stb 不做 hinting 的短板：FreeType 的 hinting
+ * 把竖笔对齐到整像素、一格 100% 覆盖，而位图里竖笔只有 1.3~1.5 像素宽，永远摊在
+ * 两个 60~80% 的灰像素上。压暗 + 去灰能把这两列推到接近实心。
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "../src/dict.h"
 #include "../src/utf8.h"
+
+/* 超采样倍数：先按 px*SS 光栅化再降采样，边缘更干净。
+ * SS=1 表示直接在目标尺寸光栅化，边缘过渡只有 1 像素宽，更像 FreeType 的
+ * 直出结果（实测有墨像素更少、实心占比更高）；SS=2 更平滑但会摊出 2 像素宽的灰雾。 */
+#ifndef SS
+#define SS 2
+#endif
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -105,8 +118,13 @@ int main(int argc, char **argv)
     stbtt_fontinfo font;
     int offset = -1, i, idx;
     float scale;
+    float scale_ss; /* 超采样用的放大 scale */
+    int baseline_ss;
     int ascent, descent, line_gap;
     int cell_w, cell_h, baseline, cols, rows, ncell;
+    double gamma_v = 1.0;
+    int black = 0;
+    unsigned char lut[256];
     uint32_t *cps;
     unsigned short *cells; /* 每个 cp 的格子序号，0xFFFF 表示缺字 */
     unsigned short *advs;
@@ -114,7 +132,7 @@ int main(int argc, char **argv)
     int have_glyph = 0;
 
     if (argc < 3) {
-        fprintf(stderr, "用法: %s <font.ttf|ttc> <out> [px] [extra_chars.txt]\n", argv[0]);
+        fprintf(stderr, "用法: %s <font.ttf|ttc> <out> [px] [extra_chars.txt] [gamma]\n", argv[0]);
         return 2;
     }
     font_path = argv[1];
@@ -123,6 +141,27 @@ int main(int argc, char **argv)
         px = atoi(argv[3]);
     if (px < 10 || px > 48)
         px = 16;
+    if (argc > 5 && atof(argv[5]) > 0.05)
+        gamma_v = atof(argv[5]);
+    if (argc > 6)
+        black = atoi(argv[6]);
+    if (black < 0)
+        black = 0;
+    if (black > 200)
+        black = 200;
+
+    /* alpha 的对比曲线：先把 <=black 的灰雾压到 0，再按 gamma 调整中间调。
+     * 目的是把「半透明的边缘」变成「明确的实心/无」，也就是用位图模拟 hinting
+     * 的效果——实测 FreeType 带 hinting 渲染时，有墨像素中有 37% 是完全实心的，
+     * 而不做这一步只有 27%，视觉上就是「灰、糊」。 */
+    for (i = 0; i < 256; i++) {
+        int v = i - black;
+
+        if (v < 0)
+            v = 0;
+        v = (int)(255.0 * pow((double)v / (double)(255 - black), gamma_v) + 0.5);
+        lut[i] = (unsigned char)(v > 255 ? 255 : v);
+    }
 
     dict_init(NULL);
 
@@ -181,15 +220,29 @@ int main(int argc, char **argv)
     if (!have_glyph)
         fprintf(stderr, "mkfont: 警告：字体 %s 里找不到汉字字形，候选窗将显示占位方块\n", font_path);
 
-    scale = stbtt_ScaleForPixelHeight(&font, (float)px);
+    /* 用 em 归一化，不用行高归一化。
+     *
+     * ScaleForPixelHeight 把 (ascent - descent) 缩到 px，而 CJK 字体的行高
+     * 约 1.45 em（Noto Sans CJK: 1160 - (-288) = 1448 / em 1000），于是
+     * 真正的汉字只有 px * 1000/1448 ≈ 0.69 px —— 设 22px 实际只画到 15px。
+     * 15px 的汉字笔画宽度不到 1.5 像素，几乎全部像素都落在抗锯齿的中间调
+     * 上（ASCII 剖面里竖笔是 "+#-#" 而不是 "@@@"），视觉上就是发灰发糊。
+     *
+     * ScaleForMappingEmToPixels 让 1 em = px，汉字才真是 px 见方。 */
+    scale = stbtt_ScaleForMappingEmToPixels(&font, (float)px);
+    /* 超采样：先按 SS 倍像素光栅化，再盒式降采样回目标尺寸。
+     * stb 不做 hinting，靠 SS×SS 子像素平均把边缘压平。 */
+    scale_ss = stbtt_ScaleForMappingEmToPixels(&font, (float)px * SS);
     stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
-    baseline = (int)((float)ascent * scale) + 1;
+    /* 格子只需容纳墨迹，不必容纳整个行高：汉字约占 0.88 em（基线上），
+     * 拉丁下伸部分约 0.22 em（基线下）。px*1.3 高、基线在 px+1 处两者都够，
+     * 又不会像按行高算那样上下各留一大片空白。 */
     cell_w = px + 2;
-    cell_h = (int)((float)(ascent - descent) * scale) + 2;
-    if (cell_h < px + 2)
-        cell_h = px + 2;
+    cell_h = (int)((float)px * 1.3f) + 1;
+    baseline = px + 1;
     if (baseline > cell_h - 2)
         baseline = cell_h - 2;
+    baseline_ss = baseline * SS;
 
     cols = 64;
     rows = (g_ncp + cols - 1) / cols;
@@ -220,10 +273,10 @@ int main(int argc, char **argv)
         if (advs[i] == 0)
             advs[i] = (unsigned short)(px / 3);
 
-        stbtt_GetCodepointBitmapBox(&font, cp, scale, scale, &x0, &y0, &x1, &y1);
+        stbtt_GetCodepointBitmapBox(&font, cp, scale_ss, scale_ss, &x0, &y0, &x1, &y1);
         gw = x1 - x0;
         gh = y1 - y0;
-        if (gw <= 0 || gh <= 0 || gw > cell_w + 8 || gh > cell_h + 8) {
+        if (gw <= 0 || gh <= 0 || gw > cell_w * SS + 16 || gh > cell_h * SS + 16) {
             cells[i] = 0xFFFF;
             continue;
         }
@@ -232,23 +285,33 @@ int main(int argc, char **argv)
             cells[i] = 0xFFFF;
             continue;
         }
-        stbtt_MakeCodepointBitmap(&font, tmp, gw, gh, gw, scale, scale, (int)cp);
+        stbtt_MakeCodepointBitmap(&font, tmp, gw, gh, gw, scale_ss, scale_ss, (int)cp);
         cells[i] = (unsigned short)i;
         cps[i] = cp;
-        for (yy = 0; yy < gh; yy++) {
-            int dy = baseline + y0 + yy;
-            if (dy < 0 || dy >= cell_h)
-                continue;
-            for (xx = 0; xx < gw; xx++) {
-                int dx = x0 + xx;
-                unsigned char a = tmp[(size_t)yy * gw + xx];
-                unsigned char *dst;
+        /* 降采样：cell 里每个像素取 2x 图上的 SS×SS 子块平均 */
+        for (yy = 0; yy < cell_h; yy++) {
+            int dy = baseline_ss + y0; /* 字形在 2x cell 里的顶边 */
+            unsigned char *dstrow;
 
-                if (!a || dx < 0 || dx >= cell_w)
-                    continue;
-                dst = &atlas[((size_t)(i / cols) * cell_h + dy) * cols * cell_w + (size_t)(i % cols) * cell_w + dx];
-                if (a > *dst)
-                    *dst = a;
+            dstrow = &atlas[((size_t)(i / cols) * cell_h + yy) * cols * cell_w + (size_t)(i % cols) * cell_w];
+            for (xx = 0; xx < cell_w; xx++) {
+                int acc = 0, sxs, sys;
+
+                for (sys = 0; sys < SS; sys++) {
+                    int ty = yy * SS + sys - dy;
+
+                    if (ty < 0 || ty >= gh)
+                        continue;
+                    for (sxs = 0; sxs < SS; sxs++) {
+                        int tx = xx * SS + sxs - x0;
+
+                        if (tx < 0 || tx >= gw)
+                            continue;
+                        acc += tmp[(size_t)ty * gw + tx];
+                    }
+                }
+                if (acc)
+                    dstrow[xx] = lut[(acc + SS * SS / 2) / (SS * SS)];
             }
         }
         free(tmp);
