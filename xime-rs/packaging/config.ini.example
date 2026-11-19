@@ -1,0 +1,49 @@
+# xime 候选窗外观配置
+#
+# 放到以下任一位置即可生效（后者覆盖前者）：
+#   /etc/xime/config.ini             系统级
+#   ~/.config/xime/config.ini        用户级
+#   $XIME_THEME 环境变量             只指定主题名
+#   命令行 --theme / --popup / --popup-cols   优先级最高
+#
+# 改完不用重启：xime 每 400ms 检查一次文件改动，下一次输入就用新外观。
+
+[xime]
+# 候选窗形态：horizontal（默认，横条）| vertical（竖列）| grid（网格）
+layout = horizontal
+# grid 形态的列数，1..9
+cols = 3
+
+# 主题。三种写法：
+#   theme = light                      内置浅色
+#   theme = dark                       内置深色
+#   theme = fcitx:omarchy              直接用 fcitx5 的主题（推荐，见下）
+#   theme = ~/.config/xime/themes/mine.ini    自己的主题文件
+# 注意：主题里带颜色的键会覆盖本文件下面 [colors] 的同名项，反之亦然——
+# 后读到的赢，[colors] 在本文件内优先。
+theme = light
+
+[colors]
+# 支持 #RGB / #RRGGBB / #AARRGGBB（alpha 在前，与 fcitx5、Qt 一致）
+bg            = #f7fbfc
+border        = #24000000
+text          = #17181c
+accent        = #2f6bff
+selected_text = #ffffff
+
+[metrics]
+# 面板内边距
+pad_x = 11
+pad_y = 6
+# 单个候选内部的左右留白
+item_pad_x = 9
+# 候选之间、行与行之间的间距
+item_gap = 4
+row_gap  = 2
+# 面板圆角、选中块圆角
+radius    = 11
+hl_radius = 7
+# 选中块相对文字行的上下外扩
+hl_pad_y = 1
+# 面板描边宽度，0 表示不描边
+border_width = 1

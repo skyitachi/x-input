@@ -6,12 +6,15 @@
 
 use crate::render::{argb, Canvas};
 
-pub const PAD_X: i32 = 10;
+// 内边距/圆角随字号一起放大：图集现在是 32px 字（`FONT_PX`），
+// 按 24px 那套数字排版会显得又挤又小。这些值只在 measure/paint 里用，
+// 两边一致就不会错位。
+pub const PAD_X: i32 = 11;
 pub const PAD_Y: i32 = 6;
 pub const ITEM_PAD_X: i32 = 9;
 pub const ITEM_GAP: i32 = 4;
 pub const ROW_GAP: i32 = 2;
-pub const RADIUS: i32 = 10;
+pub const RADIUS: i32 = 11;
 
 /// 候选面板形态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,11 +46,20 @@ impl Layout {
     }
 }
 
-/// 候选窗样式：形态 + 网格列数 + 配色
+/// 候选窗样式：形态 + 网格列数 + 一套主题（颜色 + 度量）
 pub struct Style {
     pub layout: Layout,
     pub cols: usize,
     pub dark: bool,
+    pub theme: crate::config::Theme,
+}
+
+impl Style {
+    /// 度量取当前主题的
+    #[inline]
+    fn m(&self) -> &crate::config::Metrics {
+        &self.theme.metrics
+    }
 }
 
 /// 输入模式：只影响强调色，用来一眼分清中英态
@@ -62,7 +74,12 @@ pub enum Mode {
 
 impl Default for Style {
     fn default() -> Self {
-        Style { layout: Layout::Horizontal, cols: 3, dark: false }
+        Style {
+            layout: Layout::Horizontal,
+            cols: 3,
+            dark: false,
+            theme: crate::config::Theme::light(),
+        }
     }
 }
 
@@ -77,6 +94,7 @@ impl Style {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Colors {
     pub bg: u32,
     pub border: u32,
@@ -114,9 +132,18 @@ pub fn label(idx: usize, cand: &str, with_dot: bool) -> String {
     }
 }
 
+/// 行高：文字行高 + 高亮块上下外扩。`hl_pad_y` 为默认值 1 时结果等于文字行高，
+/// 保证不配置任何东西时渲染与旧版本逐字节一致。
+fn row_h(c: &Canvas, style: &Style) -> i32 {
+    let extra = (style.m().hl_pad_y - 1).max(0) * 2;
+    c.line_height() + extra
+}
+
 /// 计算候选窗尺寸
 pub fn measure(c: &Canvas, cands: &[String], style: &Style) -> (i32, i32) {
     let lh = c.line_height();
+    let rh = row_h(c, style);
+    let m = style.m();
     let n = cands.len() as i32;
     if n == 0 {
         return (0, 0);
@@ -124,32 +151,34 @@ pub fn measure(c: &Canvas, cands: &[String], style: &Style) -> (i32, i32) {
 
     match style.layout {
         Layout::Horizontal => {
-            let mut width = PAD_X * 2;
+            let mut width = m.pad_x * 2;
             for (i, cand) in cands.iter().enumerate() {
-                width += c.text_width(&label(i, cand, true)) + ITEM_PAD_X * 2;
+                width += c.text_width(&label(i, cand, true)) + m.item_pad_x * 2;
                 if i > 0 {
-                    width += ITEM_GAP;
+                    width += m.item_gap;
                 }
             }
-            (width, lh + PAD_Y * 2)
+            // 高亮块比文字行高时，面板要跟着长高，否则选中块会被裁掉
+            let h = (lh + m.pad_y * 2).max(lh + m.hl_pad_y * 2);
+            (width, h)
         }
         Layout::Vertical => {
             let mut item_w = 0;
             for (i, cand) in cands.iter().enumerate() {
-                item_w = item_w.max(c.text_width(&label(i, cand, true)) + ITEM_PAD_X * 2);
+                item_w = item_w.max(c.text_width(&label(i, cand, true)) + m.item_pad_x * 2);
             }
-            (item_w + PAD_X * 2, n * lh + (n - 1) * ROW_GAP + PAD_Y * 2)
+            (item_w + m.pad_x * 2, n * rh + (n - 1) * m.row_gap + m.pad_y * 2)
         }
         Layout::Grid => {
             let cols = (style.cols.max(1) as i32).min(n);
             let rows = (n + cols - 1) / cols;
             let mut cell_w = 0;
             for (i, cand) in cands.iter().enumerate() {
-                cell_w = cell_w.max(c.text_width(&label(i, cand, false)) + ITEM_PAD_X * 2);
+                cell_w = cell_w.max(c.text_width(&label(i, cand, false)) + m.item_pad_x * 2);
             }
             (
-                cell_w * cols + ITEM_GAP * (cols - 1) + PAD_X * 2,
-                rows * lh + (rows - 1) * ROW_GAP + PAD_Y * 2,
+                cell_w * cols + m.item_gap * (cols - 1) + m.pad_x * 2,
+                rows * rh + (rows - 1) * m.row_gap + m.pad_y * 2,
             )
         }
     }
@@ -157,58 +186,81 @@ pub fn measure(c: &Canvas, cands: &[String], style: &Style) -> (i32, i32) {
 
 /// 把候选窗画进画布；画布尺寸必须与 measure 的结果一致
 pub fn paint(c: &mut Canvas, cands: &[String], style: &Style, mode: Mode) {
-    let mut col = colors(style.dark);
+    let m = *style.m();
+    let mut col = style.theme.colors;
     if mode == Mode::En {
         // 青色：英文态标识。只换选中块颜色，不动任何尺寸计算
-        col.accent = if style.dark {
+        col.accent = if style.theme.dark {
             argb(255, 20, 160, 133)
         } else {
             argb(255, 13, 148, 136)
         };
     }
     let lh = c.line_height();
+    let rh = row_h(c, style);
+    let text_pad = (rh - lh) / 2; // 高亮块外扩后文字要居中
     c.clear(0);
 
-    // 底 + 1px 描边
-    c.round_rect(0, 0, c.w, c.h, RADIUS, col.border);
-    c.round_rect(1, 1, c.w - 2, c.h - 2, RADIUS - 1, col.bg);
+    // 底 + 描边（border_w 可为 0，此时只画底）
+    if m.border_w > 0 {
+        c.round_rect(0, 0, c.w, c.h, m.radius, col.border);
+        let r = (m.radius - m.border_w).max(0);
+        c.round_rect(
+            m.border_w,
+            m.border_w,
+            c.w - m.border_w * 2,
+            c.h - m.border_w * 2,
+            r,
+            col.bg,
+        );
+    } else {
+        c.round_rect(0, 0, c.w, c.h, m.radius, col.bg);
+    }
 
     // 选中项统一用圆角高亮块 + 反白文字
     let item = |c: &mut Canvas, x: i32, y: i32, w: i32, text: &str, sel: bool| {
         if sel {
-            c.round_rect(x, y - 1, w, lh + 2, 7, col.accent);
-            c.text(x + ITEM_PAD_X, y, text, col.sel_text);
+            c.round_rect(
+                x,
+                y - m.hl_pad_y,
+                w,
+                lh + m.hl_pad_y * 2,
+                m.hl_radius,
+                col.accent,
+            );
+            c.text(x + m.item_pad_x, y, text, col.sel_text);
         } else {
-            c.text(x + ITEM_PAD_X, y, text, col.text);
+            c.text(x + m.item_pad_x, y, text, col.text);
         }
     };
 
     match style.layout {
         Layout::Horizontal => {
-            let mut x = PAD_X;
+            let mut x = m.pad_x;
+            let y = m.pad_y + text_pad;
             for (i, cand) in cands.iter().enumerate() {
                 let l = label(i, cand, true);
-                let item_w = c.text_width(&l) + ITEM_PAD_X * 2;
-                item(c, x, PAD_Y, item_w, &l, i == 0);
-                x += item_w + ITEM_GAP;
+                let item_w = c.text_width(&l) + m.item_pad_x * 2;
+                item(c, x, y, item_w, &l, i == 0);
+                x += item_w + m.item_gap;
             }
         }
         Layout::Vertical => {
-            let item_w = c.w - PAD_X * 2;
+            let item_w = c.w - m.pad_x * 2;
             for (i, cand) in cands.iter().enumerate() {
-                let y = PAD_Y + i as i32 * (lh + ROW_GAP);
+                let y = m.pad_y + i as i32 * (rh + m.row_gap) + text_pad;
                 let l = label(i, cand, true);
-                item(c, PAD_X, y, item_w, &l, i == 0);
+                item(c, m.pad_x, y, item_w, &l, i == 0);
             }
         }
         Layout::Grid => {
             let n = cands.len() as i32;
             let cols = (style.cols.max(1) as i32).min(n);
-            let cell_w = (c.w - PAD_X * 2 - ITEM_GAP * (cols - 1)) / cols;
+            let cell_w = (c.w - m.pad_x * 2 - m.item_gap * (cols - 1)) / cols;
             for (i, cand) in cands.iter().enumerate() {
                 let i = i as i32;
-                let x = PAD_X + (i % cols) * (cell_w + ITEM_GAP);
-                let y = PAD_Y + (i / cols) * (lh + ROW_GAP);
+                let x = m.pad_x + (i % cols) * (cell_w + m.item_gap);
+                let y = m.pad_y + (i / cols) * (rh + m.row_gap) + text_pad;
                 let l = label(i as usize, cand, false);
                 item(c, x, y, cell_w, &l, i == 0);
             }
@@ -225,7 +277,7 @@ mod tests {
     }
 
     fn style(layout: Layout) -> Style {
-        Style { layout, cols: 3, dark: false }
+        Style { layout, cols: 3, dark: false, ..Style::default() }
     }
 
     #[test]
@@ -258,10 +310,10 @@ mod tests {
     fn 网格列数受候选数约束() {
         let c = Canvas::new(1, 1);
         let two = vec!["你好".to_string(), "你号".to_string()];
-        let s = Style { layout: Layout::Grid, cols: 5, dark: false };
+        let s = Style { layout: Layout::Grid, cols: 5, dark: false, ..Style::default() };
         let (w, h) = measure(&c, &two, &s);
         // 只有 2 条时候选集不该按 5 列撑宽
-        let (w2, _) = measure(&c, &two, &Style { layout: Layout::Grid, cols: 2, dark: false });
+        let (w2, _) = measure(&c, &two, &Style { layout: Layout::Grid, cols: 2, dark: false, ..Style::default() });
         assert_eq!(w, w2);
         assert_eq!(h, c.line_height() + PAD_Y * 2);
     }
@@ -270,7 +322,7 @@ mod tests {
     fn 绘制不越界且各形态可复用() {
         for layout in [Layout::Horizontal, Layout::Vertical, Layout::Grid] {
             for dark in [false, true] {
-                let s = Style { layout, cols: 3, dark };
+                let s = Style { layout, cols: 3, dark, ..Style::default() };
                 let v = cands();
                 let probe = Canvas::new(1, 1);
                 let (w, h) = measure(&probe, &v, &s);
@@ -303,9 +355,9 @@ mod tests {
     fn 显示条数随形态变化() {
         assert_eq!(style(Layout::Horizontal).max_items(), 6);
         assert_eq!(style(Layout::Vertical).max_items(), 9);
-        assert_eq!(Style { layout: Layout::Grid, cols: 3, dark: false }.max_items(), 9);
-        assert_eq!(Style { layout: Layout::Grid, cols: 9, dark: false }.max_items(), 9);
-        assert_eq!(Style { layout: Layout::Grid, cols: 2, dark: false }.max_items(), 6);
+        assert_eq!(Style { layout: Layout::Grid, cols: 3, dark: false, ..Style::default() }.max_items(), 9);
+        assert_eq!(Style { layout: Layout::Grid, cols: 9, dark: false, ..Style::default() }.max_items(), 9);
+        assert_eq!(Style { layout: Layout::Grid, cols: 2, dark: false, ..Style::default() }.max_items(), 6);
     }
 
     #[test]
