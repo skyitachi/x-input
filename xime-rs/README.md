@@ -257,17 +257,32 @@ ok   非消费按键（Esc）已通过虚拟键盘回注
 全部通过
 ```
 
-英文链路（前缀补全 + 空格上屏 + 大小写）：
+英文链路。`--en` 默认**透传**（不出候选窗），补全要显式开 `--en-completion`：
 
 ```
-$ MOCK_KEYS="hel space" MOCK_EXPECT="help" XIME_ARGS=--en \
+$ MOCK_PURPOSE=0 MOCK_KEYS="hel enter" XIME_ARGS=--en \
   XIME_CLIENT=./xime ../wayland-ime/build/mock_compositor
-ok   空格选中首选并提交 "help"
+ok   密码框无组字（preedit 1 次）
+ok   密码框无 commit_string
+ok   4 键全部原样回注（含数字）
 全部通过
 
-$ MOCK_KEYS="Hel space" MOCK_EXPECT="Help" ...      # Shift+首字母 -> 首字母大写
+$ MOCK_KEYS="hel space" MOCK_EXPECT="help" XIME_ARGS="--en --en-completion" ...
+ok   提交内容 "help" 符合预期
+全部通过
+
+$ MOCK_KEYS="Hel space" MOCK_EXPECT="Help" ...       # Shift+首字母 -> 首字母大写
 $ MOCK_KEYS="shift hel space" MOCK_EXPECT="help" ... # 单按 Shift 切英文
 ```
+
+密码框与终端是特例，靠 `content_type` 事件自动识别：
+
+- `content_purpose=password/pin`（GUI 密码框）→ **全键透传**：不组字、不弹候选、Shift 切换一并禁用，敲什么进什么；
+- `content_purpose=terminal`（终端）→ 英文模式自动退化为纯透传（终端里英文补全只有坏处），中文模式照常组字；
+- 英文模式**默认就不出候选窗**（字母直接进应用，与 fcitx5 一致）；想要前缀补全得显式加 `--en-completion`；
+- 英文模式的回车/空格会在上屏后**原样转发按键本身**——旧实现把回车吃掉，sudo 输完密码连提交都收不到。
+
+假合成器用 `MOCK_PURPOSE=8|14` 模拟这两类焦点，断言「无组字、无提交、按键全部原样回注」。
 
 最后一条同时验证了 Shift 的延迟切换：`Hel` 那次 Shift 一直按着，所以没有触发中英切换，
 否则打出来的会是中文候选而不是 `Help`。
@@ -412,21 +427,89 @@ xime --verbose                    # 打印协议绑定与每次 preedit/commit
 | 竖排 | `--popup vertical` | 9 条 | 单列列表，选中项整行高亮 |
 | 网格 | `--popup grid --popup-cols N` | N×3，上限 9 | 多行多列，N 默认 3 |
 
-配色两套：`--theme light`（默认）/ `--theme dark`。
+配色两套内置：`--theme light`（默认）/ `--theme dark`，更多见下一节。
 
 ```sh
 xime --popup vertical              # 竖排候选
 xime --popup grid --popup-cols 4   # 4 列网格
 xime --theme dark                  # 深色候选窗
+xime --theme fcitx:omarchy         # 直接用 fcitx5 的主题
 xime --render-test out.bmp nihao --popup grid   # 任意形态预览成图
 ```
 
 ![横排](dist/popup-horizontal.png) ![竖排](dist/popup-vertical.png) ![网格](dist/popup-grid.png)
 
-形态只影响"画多大、怎么排"，与解码逻辑解耦：`popup.rs` 里一个 `Style`
-（形态 + 列数 + 明暗），`measure` 和 `paint` 各自按形态分支，主循环只把
-`Style` 传下去。后续接配置界面（`~/.config/xime/config.toml`）时，
-这份 `Style` 就是唯一要落盘的东西。
+形态只影响"画多大、怎么排"，与解码逻辑解耦：`popup.rs` 里一个 `Style`，
+`measure` 和 `paint` 各自按形态分支，主循环只把 `Style` 传下去。
+
+### 外观配置：直接吃 fcitx5 的 theme.conf
+
+`Style` 里的颜色和所有边距都能配，落到 `config.ini`：
+
+```sh
+# 三级，后者覆盖前者
+/etc/xime/config.ini
+~/.config/xime/config.ini
+XIME_THEME=fcitx:omarchy xime     # 环境变量只覆盖主题
+```
+
+```ini
+[xime]
+layout = horizontal     ; horizontal | vertical | grid
+cols = 3
+theme = fcitx:omarchy   ; light | dark | fcitx:名字 | 主题文件路径
+
+[colors]
+bg = #f7fbfc            ; 支持 #RGB / #RRGGBB / #AARRGGBB
+text = #17181c
+accent = #2f6bff
+selected_text = #ffffff
+border = #24000000
+
+[metrics]
+pad_x = 11
+pad_y = 6
+item_pad_x = 9
+item_gap = 4
+row_gap = 2
+radius = 11
+hl_radius = 7
+hl_pad_y = 1
+border_width = 1
+```
+
+**不用重启**：主循环每 400ms 检查一次配置文件指纹（mtime + 大小），变了就重算
+`Style`，接着的 `refresh` 会用新度量重新 `measure`，尺寸变了自动重建 shm 缓冲。
+
+#### 复用 fcitx5 主题
+
+`--theme fcitx:omarchy` 会去 `~/.local/share/fcitx5/themes/<名字>/theme.conf`
+和 `/usr/share/fcitx5/themes/<名字>/theme.conf` 找主题并直接映射。
+`xime --list-themes` 列出本机能找到的全部主题，`xime --dump-theme --theme fcitx:omarchy`
+打印映射结果（排查"为什么颜色不对"用这个）。
+
+字段对应关系（fcitx5 的 KConfig 是 INI，解析器只实现需要的子集）：
+
+| fcitx5 theme.conf | xime | 说明 |
+|---|---|---|
+| `[InputPanel] NormalColor` | `text` | 候选文字色 |
+| `[InputPanel] HighlightCandidateColor` | `selected_text` | **选中项文字色** |
+| `[InputPanel] HighlightBackgroundColor` | `accent` | 选中块底色 |
+| `[InputPanel/Highlight] Color` | `accent`（回退） | 上面那个键缺失时用 |
+| `[InputPanel/Background] Color` | `bg` | 面板底色 |
+| `[InputPanel/Background] BorderColor` / `BorderWidth` | `border` / `border_width` | 描边 |
+| `[InputPanel/ContentMargin]` + `[InputPanel/Background/Margin]` | `pad_x` / `pad_y` | fcitx 是两层相加 |
+| `[InputPanel/TextMargin] Left` | `item_pad_x` | 文字左右留白 |
+| `[InputPanel] Spacing` | `item_gap` / `row_gap` | 候选间距，缺省 0 |
+| `[InputPanel/Highlight/Margin] Top` | `hl_pad_y` | 选中块上下外扩 |
+| 背景亮度 | 浅色/深色判定 | fcitx 没这个键，按 BT.601 luma 推断 |
+| `Image=`（九宫格 PNG/SVG） | **不支持** | xime 没有图片解码器，见「已知限制」 |
+| `PageButtonAlignment` / `[InputPanel/PrevPage]` | **不支持** | 还没做分页 |
+
+fcitx 的纯色主题（Omarchy 生成的就是这种）能 100% 还原：颜色、两层边距、
+2px 描边、直角高亮块都对得上。带背景图的主题只会退化成纯色底。
+
+![fcitx 主题](dist/themes/omarchy-h.png)
 
 ### 英文（前缀补全）
 
@@ -450,8 +533,8 @@ Shift 单按切中英。英文模式不是"关掉输入法让按键直通"，而
 英文态候选窗的选中块是青色、中文态是蓝色，不靠文字标记，一眼分得出。
 
 ```sh
-xime --en                          # 启动即英文
-xime --en-passthrough              # 英文但不补全，按键直接进应用
+xime --en                          # 启动即英文（透传，不出候选窗，与 fcitx5 一致）
+xime --en --en-completion          # 英文 + 前缀补全候选窗
 xime --query hel --en              # 看某个前缀的补全结果
 xime --render-test e.bmp hel --en  # 渲染英文候选窗
 ```
@@ -539,6 +622,9 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 | 英文只用一万高频词 | 词表取自公开的词频统计，不含专有名词与专业术语 | 罕见词、人名、代码标识符补不出来，按回车照原样上屏即可 |
 | 英文不纠错、不预测下一词 | 刻意不做（见第六节） | 打错字不会被改正，也不会替用户补句首大写 |
 | Plasma 下必须由 KWin 拉起 | 只有 KWin 交出的那条连接才被放行绑定 `zwp_input_method_v2` | 手工 `xime &` 通常绑不上；走桌面条目或 `xime-setup` |
+| 无法在 X11/XWayland 应用里用 | 只实现 `zwp_input_method_v2`；XWayland 客户端走 XIM，xime 没有那套桥 |
+| Qt 应用设了 `QT_IM_MODULE=fcitx` 时用不了 xime | Qt 会走 fcitx 的 DBus 平台插件，**根本不创建 `zwp_text_input_v3`**，xime 的提交无处可送 | 典型发行版（如 Omarchy）默认全局设了该变量；要用 xime 需在启动应用时清空它 |
+| 微信（Linux Universal）里用不了 xime | 它虽是 Qt6 静态链接、确实创建 `zwp_text_input_v3` 并发送 enable/content_type，但聊天框不消费传回来的 `QInputMethodEvent`（实测 commit 已发出、界面无反应） | 微信必须保留 `QT_IM_MODULE=fcitx` 走 fcitx5；切到 xime 后微信没有可用输入法。想根治需另加 fcitx5 DBus 前端，见 `docs/fcitx5-dbus-frontend.md` |
 | 简繁只有 OpenCC `s2t` 一种口径 | 未生成 `s2tw`/`s2hk` 变体表（用词差异大，如 软件/軟體） | 台湾/香港用词习惯需另加一列转换表，接口已按 `Variant` 预留 |
 
 ---

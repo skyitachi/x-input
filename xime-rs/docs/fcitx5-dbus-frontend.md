@@ -1,0 +1,360 @@
+# 调研：给 xime 加一个 fcitx5 DBus 前端
+
+> 目标读者：决定要不要做这件事的人。
+> 结论先行：**技术上可行，但有一步必须先用 100 行代码验证，验证不过就不要投入。**
+> 文档日期：2026-11-19。协议依据：`fcitx/fcitx5-qt` master、`fcitx/fcitx5` master、微信 4.x Linux 二进制。
+
+---
+
+## 一、为什么需要考虑这条路
+
+xime 现在是**合成器级**输入法：只实现 `zwp_input_method_v2`，靠合成器把按键转给它，再通过 `zwp_text_input_v3` 把结果送回应用。这条链有三个硬边界：
+
+| 边界 | 原因 | 影响 |
+|---|---|---|
+| GNOME | mutter 至今未实现 `zwp_input_method_v2`（`libmutter-18` 里该符号计数为 0） | xime 在 GNOME 上完全不可用 |
+| X11 / XWayland | X 客户端走 XIM，没有 input-method-v2 | 微信、WPS 等 XWayland 应用用不了 |
+| 自带输入法客户端的应用 | 见下 | 微信里不上屏 |
+
+而 fcitx5 在**同一个微信**里能用。原因是微信把 fcitx 的客户端编译进了自己的二进制，走的是会话总线，跟合成器无关：
+
+```
+$ strings -a /opt/wechat-universal/wechat | grep -i fcitx
+fcitx::QFcitxPlatformInputContext
+fcitx::FcitxCandidateWindow
+fcitx::FcitxQtWatcher / FcitxQtInputMethodProxy
+org.fcitx.Fcitx.InputContext / org.fcitx.Fcitx.InputContext1
+org.fcitx.Fcitx5
+FCITX_DBUS_ADDRESS
+```
+
+所以「让 xime 在微信里能用」和「让 xime 在 GNOME 上能用」其实是**同一件事**：给 xime 加一个 DBus 前端，让它假装成 fcitx5 守护进程。所有自带 fcitx5-qt / fcitx5-gtk 的应用都会连上来。
+
+覆盖面变化：
+
+| 环境 | 现在（Wayland 前端） | 加上 DBus 前端 |
+|---|---|---|
+| Hyprland / sway / KDE | ✅ | ✅（两种前端并存） |
+| GNOME Wayland | ❌ 无协议 | ✅ GTK / Qt 应用 |
+| X11 会话 | ❌ | ✅ |
+| XWayland 应用（微信、WPS） | ❌ | ✅ |
+| Electron（走 Qt 模块） | ❌ | ✅ |
+| 只认 IBus 的应用（Firefox 等） | ❌ | ❌ 仍需第三个前端 |
+
+---
+
+## 二、协议的事实标准在哪
+
+没有 RFC。事实标准是 fcitx5-qt 的接口 XML 加上 fcitx5 守护端的 vtable 注册：
+
+| 文件 | 作用 |
+|---|---|
+| `fcitx5-qt/qt5/dbusaddons/interfaces/org.fcitx.Fcitx.InputMethod1.xml` | 创建输入上下文（12 行） |
+| `fcitx5-qt/qt5/dbusaddons/interfaces/org.fcitx.Fcitx.InputContext1.xml` | 输入上下文的全部方法与信号（117 行） |
+| `fcitx5-qt/qt5/dbusaddons/interfaces/org.fcitx.Fcitx.Controller1.xml` | 配置界面用（**不需要实现**） |
+| `fcitx5-qt/qt5/dbusaddons/fcitxqtinputcontextproxy_p.h` | 客户端**实际怎么连、传什么参数** |
+| `fcitx5-qt/qt5/platforminputcontext/qfcitxplatforminputcontext.cpp` | 客户端拿到信号后怎么落到应用 |
+| `fcitx5/src/frontend/dbusfrontend/dbusfrontend.cpp` | 守护端的行为参考实现（含 batched 变体） |
+
+> qt6 目录下的多数文件是指向 qt5 的符号链接，读一份即可。
+
+---
+
+## 三、拓扑与握手
+
+```
+应用进程（微信 / WPS / 任意 Qt 程序）
+├── QDBusServiceWatcher 监听 "org.fcitx.Fcitx5"
+├── 连 service owner 的 /org/freedesktop/portal/inputmethod
+│   └── org.fcitx.Fcitx.InputMethod1.CreateInputContext(a(ss)) → (o path, ay uuid)
+└── 在返回的 path 上
+    └── org.fcitx.Fcitx.InputContext1
+        ├── 方法：FocusIn / FocusOut / Reset / SetCursorRect(V2) / SetCapability /
+        │        SetSupportedCapability / SetSurroundingText(Position) / ProcessKeyEvent /
+        │        SelectCandidate / PrevPage / NextPage / InvokeAction / DestroyIC
+        └── 信号：CommitString / UpdateClientSideUI / UpdateFormattedPreedit /
+                 DeleteSurroundingText / ForwardKey / CurrentIM / NotifyFocusOut
+```
+
+关键常量（来自 `fcitxqtwatcher_p.h`）：
+
+| 项 | 值 |
+|---|---|
+| 服务名 | `org.fcitx.Fcitx5`（portal 名 `org.freedesktop.portal.Fcitx`，Qt 默认 `setWatchPortal(true)` 两边都监听） |
+| InputMethod1 路径（主总线） | `/org/freedesktop/portal/inputmethod` |
+| InputMethod1 路径（portal 总线，兼容） | `/inputmethod` |
+| IC 对象路径 | **由守护端自选**，通过 CreateInputContext 的返回值告知 |
+| IC uuid | 16 字节；X11 下 Qt 用它做 focus group，Wayland 下不用 |
+
+`CreateInputContext` 的参数（客户端固定发这些键）：
+
+| key | value |
+|---|---|
+| `program` | 应用可执行文件名 |
+| `display` | `wayland:` 或 `x11:` |
+| `clientControlVirtualkeyboardShow` | `true` |
+| `clientControlVirtualkeyboardHide` | `false` |
+
+---
+
+## 四、接口清单
+
+### 4.1 InputMethod1（只需两个方法）
+
+| 方法 | 入参 | 出参 | 说明 |
+|---|---|---|---|
+| `CreateInputContext` | `a(ss)` | `o` 路径 + `ay` uuid | 每次新窗口一个 |
+| `Version` | – | `u` | 返回 `1` |
+
+### 4.2 InputContext1 方法
+
+| 方法 | 签名 | MVP | 说明 |
+|---|---|---|---|
+| `FocusIn` | `()` | ✅ | 进入输入框 |
+| `FocusOut` | `()` | ✅ | 离开输入框，需清 preedit |
+| `Reset` | `()` | ✅ | 清空组字状态 |
+| `SetCursorRect` | `iiii` | ✅ | 候选窗定位（Wayland 下若声明 `RelativeRect` 则为窗口相对坐标） |
+| `SetCursorRectV2` | `iiiid` | 可选 | 多一个缩放因子 |
+| `SetSupportedCapability` | `t` | ✅ | 客户端声明它认识哪些位，Qt 固定发 `0x1ffffffffff` |
+| `SetCapability` | `t` | ✅ | **必须解析**：密码框透传、ClientSideInputPanel 门控都靠它 |
+| `SetSurroundingText` | `suu` | 可选 | 上下文文本 + 光标/锚点 |
+| `SetSurroundingTextPosition` | `uu` | 可选 | 仅更新位置 |
+| `ProcessKeyEvent` | `uuub u` → `b` | ✅ | **核心**：`keyval, keycode, state, isRelease, time` → 是否消费 |
+| `ProcessKeyEventBatch` | 同名 + 额外出参 | ❌ | fcitx5 新版扩展，Qt 默认不用 |
+| `SelectCandidate` | `i` | ✅ | 点候选 / 数字键选词 |
+| `PrevPage` / `NextPage` | `()` | ✅ | 翻页 |
+| `InvokeAction` | `ui` | ❌ | 动作按钮，可忽略 |
+| `DestroyIC` | `()` | ✅ | 窗口销毁，释放状态 |
+| `Show/HideVirtualKeyboard`、`IsVirtualKeyboardVisible` | – | ❌ | 移动端才有意义 |
+
+### 4.3 InputContext1 信号
+
+| 信号 | 签名 | MVP | 说明 |
+|---|---|---|---|
+| `CommitString` | `s` | ✅ | 上屏文本 |
+| `UpdateClientSideUI` | `a(si)ia(si)a(si)a(ss)iibb` | ✅ | **推荐主用**：preedit + 上下辅助行 + 候选 + 页码标志，一次发完，由应用自己画 |
+| `UpdateFormattedPreedit` | `a(si)i` | 可选 | 只有 preedit，需外部 UI 画候选（kimpanel / classic ui） |
+| `DeleteSurroundingText` | `iu` | 后期 | 替换选区 |
+| `ForwardKey` | `uub` | 可选 | 让应用重新注入一个按键（也可以直接让 ProcessKeyEvent 返回 false） |
+| `CurrentIM` | `sss` | 可选 | 当前输入法名/唯一名/语言，用于状态提示 |
+| `NotifyFocusOut` | `()` | 不用 | 服务端要求失焦 |
+| `VirtualKeyboardVisibilityChanged` | `b` | 不用 | |
+
+### 4.4 数据结构
+
+```
+FcitxQtFormattedPreedit = (s: 文本, i: 格式位)
+  格式位：Underline=1<<3、HighLight=1<<4、DontCommit=1<<5、Bold=1<<6、Strike=1<<7、Italic=1<<8
+FcitxQtStringKeyValue  = (s: 标签, s: 文本)      // 候选：label + 词
+```
+
+D-Bus 类型签名分别为 `a(si)` 与 `a(ss)`。Qt 侧靠 `registerFcitxQtDBusTypes()` 注册这两个自定义类型；守护端只要结构对齐即可。
+
+### 4.5 能力位（`common/fcitxflags.h`）
+
+Qt 客户端固定声明：
+
+```
+Preedit(1<<1) | FormattedPreedit(1<<4) | ClientUnfocusCommit(1<<5) |
+GetIMInfoOnFocus(1<<23) | KeyEventOrderFix(1<<37) | ReportKeyRepeat(1<<38) |
+ClientSideInputPanel(1<<39)   [+ RelativeRect(1<<24) 仅在 Wayland 平台]
+```
+
+xime 必须关心的三位：
+
+| 位 | 含义 | xime 的处理 |
+|---|---|---|
+| `Password(1<<3)` / `Sensitive(1<<36)` | 密码框 | 全键透传，不组字 |
+| `ClientSideInputPanel(1<<39)` | 应用自己画候选窗 | 发 `UpdateClientSideUI`，不接自己的 popup |
+| `RelativeRect(1<<24)` | 光标矩形是窗口相对坐标 | 只影响候选窗位置，DBus 前端不需要 |
+
+---
+
+## 五、微信实际会调用什么
+
+从二进制里能直接验到的字符串（每个都是独立符号）：
+
+| 符号 | 命中 | 结论 |
+|---|---|---|
+| `ProcessKeyEvent` | 4 | 走按键通道 |
+| `CreateInputContext` | 4 | 走标准建上下文流程 |
+| `SetSupportedCapability` | 1 | 会做能力协商 |
+| `SetCursorRectV2` | 1 | 用 V2 版本 |
+| `UpdateClientSideUI` | 1 | **候选窗由微信自己画** |
+| `clientControlVirtualkeyboardShow` | 1 | 与 fcitx5-qt 源码逐字一致 |
+
+也就是说微信内置的就是**未经改动的 fcitx5-qt 客户端逻辑**（至少这部分没改）。它对 xime 的要求就是：按第四章的清单应答。
+
+**一个有利之处**：因为 `ClientSideInputPanel` 恒置位，候选窗（含 preedit 显示）由微信进程内的 `FcitxCandidateWindow` 绘制。xime 在 DBus 前端里**完全不需要处理窗口、定位、字体、主题**——那是 Wayland 前端才操心的事。这也顺带消除了现在那个 `(0,-16) 0×16` 无效光标矩形的问题。
+
+---
+
+## 六、最大的未知 —— 已实测通过
+
+这是整份文档里唯一一条「不验证就别动手」的项。
+
+Qt 模块把上屏落到应用的方式是：
+
+```cpp
+void QFcitxPlatformInputContext::commitString(const QString &str) {
+    QObject *input = qGuiApp->focusObject();
+    if (!input) return;                    // ← 同一个依赖点
+    QInputMethodEvent event;
+    event.setCommitString(str);
+    QCoreApplication::sendEvent(input, &event);
+}
+```
+
+而 Wayland 路径里，`QWaylandTextInputv3::zwp_text_input_v3_done()` 最后也是 `sendEvent(focusObject, &event)`。**两条路径在最后一步是同一个动作。**
+
+但我们观察到：Wayland 路径下 xime 已经发出 `commit "了" (serial=68)`，微信界面毫无反应。这留下两种可能：
+
+| 假设 | 推论 |
+|---|---|
+| **A. 微信 patch 了 fcitx 客户端**，把 `commitString` 改成直接喂自己的编辑器 | DBus 前端可行，Wayland 路径注定不通 |
+| **B. Wayland 路径失败在更早的位置**（enter 未送达、surface 不匹配等），微信的 focusObject 其实正常 | DBus 前端同样可行 |
+
+两种假设下**结论都是「值得做」**，但前提是 A/B 至少一个成立，而不是第三种情况（「微信编辑器根本不接受 QInputMethodEvent」）——若是第三种，DBus 前端也一样不上屏，整个方向作废。
+
+### Phase 0：用 100 行代码判定（半天）
+
+写一个 **假 fcitx5 守护**（Python + `dbus-next` 即可，不需要 Rust）：
+
+1. 抢 `org.fcitx.Fcitx5` 服务名（先 `systemctl --user stop omarchy-fcitx5`）
+2. 在 `/org/freedesktop/portal/inputmethod` 提供 `InputMethod1.CreateInputContext` → 返回固定路径 + 16 字节 uuid
+3. 在该路径提供 `InputContext1`，所有方法都**立即返回成功**（`ProcessKeyEvent` 必须回 `false`，否则按键被吞）
+4. 收到任意 `ProcessKeyEvent` 时，发一次 `CommitString("被xime接管了")`
+5. 保持微信的 `QT_IM_MODULE=fcitx`（默认值，**不用改启动项**），重启微信，点进聊天框敲一个键
+
+判定：
+
+| 结果 | 含义 | 下一步 |
+|---|---|---|
+| 聊天框出现「被xime接管了」 | 微信确实通过 DBus 上屏 | ✅ 立项 |
+| 什么都没有 | 落在第三种情况 | ❌ 放弃这条路，维持 fcitx5 |
+
+这个实验还有一个额外价值：它顺便验证了「服务名独占 = 与 fcitx5 互斥」这个约束的真实体感，以及微信对 `ProcessKeyEvent` 回复速度的容忍度。
+
+### Phase 0 实测结果：**通过**（2026-11-19）
+
+用 `dbus-python`（约 250 行，`/tmp/fake_fcitx5.py`）实现了假守护，实测结论如下。
+
+**成立的部分**
+
+| 观察 | 说明 |
+|---|---|
+| 微信**自动重连**，不用重启 | 停掉 fcitx5 → 起假守护，微信的 `FcitxQtWatcher` 立刻重建上下文，日志里直接看到 `CreateInputContext` 的 `program='wechat'` |
+| 上下文入参与预期完全一致 | `[('program','wechat'), ('display','wayland:'), ('clientControlVirtualkeyboardShow','true'), ('clientControlVirtualkeyboardHide','false')]` |
+| 能力位正常协商 | `SetSupportedCapability 0x1ffffffffff` → `SetCapability 0xe801800032`，`bit39 ClientSideInputPanel` 恒开 |
+| 光标矩形**有效** | `SetCursorRectV2 277,1253 2x22 @1.0`，与 Wayland 路径下那个 `(0,-16) 0×16` 形成鲜明对比 |
+| `CommitString` 一路上屏 | 敲键后微信回传 `SetSurroundingText 'XIME接管成功' cursor=8`，敲第二次变成 `cursor=16` —— **输入框真的收到了** |
+
+**据此可以确认**
+
+1. 假设 **A 或 B 成立**，第三种情况（微信编辑器不接受 `QInputMethodEvent`）被排除。DBus 前端这条路可行，**立项**。
+2. Wayland 路径失败的原因不在「微信不消费事件」，而在更早的协议环节（enter 未送达 / surface 不匹配 / 时序）。这条推断留待日后单独查，但已不影响 DBus 方向。
+3. `ProcessKeyEvent` 返回 `true`（表示已消费）时，微信确实不再插入原始字符，说明按键「吞/放」的控制权在守护这一侧，行为正确。
+
+**Implementation notes（踩到的）**
+
+- 服务名要**同时**占 `org.fcitx.Fcitx5` 和 `org.fcitx.Fcitx-0`（fcitx4 兼容名，微信两套代理都带）。
+- `dbus-python` 里获取调用者必须用 `sender_keyword="sender"`，不能自己反查。
+- `gdbus call` 会把整数推断成 int32，与 `u` 签名不匹配而报 `UnknownMethod`；验证签名要用 Python 客户端。
+- 停 fcitx5 后系统即无输入法（服务名独占的必然结果），实验期间需接受这个空窗。
+
+---
+
+## 七、最小可行子集（MVP）
+
+**做：**
+
+- 服务 `org.fcitx.Fcitx5`，路径 `/org/freedesktop/portal/inputmethod`
+- `InputMethod1.CreateInputContext` + `Version`
+- IC 方法：`FocusIn`、`FocusOut`、`Reset`、`SetCapability`、`SetSupportedCapability`、`SetCursorRect`、`SetCursorRectV2`、`ProcessKeyEvent`、`SelectCandidate`、`PrevPage`、`NextPage`、`DestroyIC`
+- IC 信号：`CommitString`、`UpdateClientSideUI`、`CurrentIM`
+- 能力位解析：`Password` / `Sensitive` → 透传，`ClientSideInputPanel` → 客户端画窗
+
+**不做（第一版刻意排除）：**
+
+- `Controller1` 全部（配置界面；`fcitx5-configtool` 会报错，可接受）
+- fcitx4 兼容接口 `org.fcitx.Fcitx.InputContext`（老应用才会用）
+- `InvokeAction`、虚拟键盘、`DeleteSurroundingText`（先返回错误，Qt 会忽略）
+- `SetSurroundingText`（可选，词库联想用；第一版按空处理）
+- GTK 模块（`fcitx5-gtk`）与 IBus 前端
+
+---
+
+## 八、实现要点与坑
+
+1. **按键必须及时回复**。Qt 的 `filterEvent` 是异步的：先 `return true` 吞掉按键，再按 `ProcessKeyEvent` 的返回值决定要不要重新投递。守护端卡顿 300ms，打字就会一顿一顿；返回错误同样会触发重投，导致乱序。调试期可设 `FCITX_QT_USE_SYNC=1` 强制同步、便于观察。
+2. **`state` 的 bit31 表示按键自动重复**（`KeyState::Repeat`），不是修饰键，要屏蔽掉再判断。
+3. **必须先 `FocusIn` 再处理按键**，否则候选窗不出现；`FocusOut` 时要把 preedit 清空并提交或丢弃，否则残字会粘到下一个输入框。
+4. **`SetCapability` 可能同时含 `Password` 与 `ClientSideInputPanel`**，桌面终端还会带 `SurroundingText`；xime 现有的 `field_passthrough` 逻辑可以直接复用。
+5. **`UpdateClientSideUI` 的 9 个参数一个都不能少**，尤其 `candidateIndex`、`layoutHint`、`hasPrev/hasNext`，否则微信的候选窗会错位或空白。
+6. **服务名独占**：`org.fcitx.Fcitx5` 只能有一个占用者。xime 的 DBus 前端与真 fcitx5 天然互斥，需要 `xime-switch` 增加一个「fcitx-dbus 模式」，并在启动时检测对方是否在跑。
+7. **静态构建友好**：`zbus` 是纯 Rust 的 D-Bus 实现，不依赖 `libdbus`，不会破坏 xime「零动态依赖」的目标。这一点要在选库时守住（不要用 `dbus-rs`）。
+8. **多实例/多应用**：每个窗口一个 IC，路径要唯一（例如 `/xime/ic/<n>`），`DestroyIC` 要真的回收，否则状态会串。
+9. **`program` 字段可以白名单**：拿到应用名后，特定程序（如终端、密码框）直接进透传模式，比靠 capability 更可靠。
+
+---
+
+## 九、与现有代码的接入方式
+
+现在 `src/main.rs` 把 Wayland 事件循环、输入状态机、候选窗逻辑混在一起。要挂第二个前端，至少需要两层拆分：
+
+```
+engine   （已有：组字、候选、词库、简繁）      ← 完全不改
+popup    （已有：Wayland surface 绘制）        ← 仅 Wayland 前端使用
+
+frontend trait
+├── WaylandFrontend   （现有 main.rs 的逻辑，改造成 trait 实现）
+└── FcitxDbusFrontend （新增）
+```
+
+trait 大致只需四个方法：
+
+```rust
+trait Frontend {
+    fn on_key(&mut self, key: KeyEvent) -> bool;   // 是否消费
+    fn commit(&mut self, text: &str);
+    fn update_preedit(&mut self, preedit: &str, cursor: usize, cands: &[(String, String)], page: (bool, bool));
+    fn reset(&mut self);
+}
+```
+
+DBus 前端的 `on_key` 把 `(keyval, keycode, state)` 还原成 xime 的 `KeyEvent`；`update_preedit` 转成 `UpdateClientSideUI`；`commit` 转成 `CommitString`。**不需要候选窗**，这块代码量因此小很多。
+
+---
+
+## 十、工作量估计
+
+| 阶段 | 内容 | 估计 |
+|---|---|---|
+| Phase 0 | 假守护验证微信是否上屏 | 0.5 人日 |
+| 1 | 前端 trait 抽象 + 现有 Wayland 逻辑改造 | 2 人日 |
+| 2 | `zbus` 服务层：3 个接口、20 个方法/信号、类型与错误处理 | 3 人日 |
+| 3 | 引擎状态映射：按键还原、capability、preedit/候选打包、页码 | 2 人日 |
+| 4 | 联调：QLineEdit 探针 → 微信 → WPS → GNOME GTK 应用 | 1.5 人日 |
+| 5 | 打包：`xime-switch` 增加模式、服务名冲突检测、文档 | 1 人日 |
+
+**合计约 10 人日**（不含 GTK/IBus 前端）。若只求「微信能用」，Phase 2/3 可再砍到 6~7 人日。
+
+风险主要在 Phase 4：微信的焦点切换、候选窗位置、密码框识别都只能在真机上看。
+
+---
+
+## 十一、结论
+
+- **方向成立**：fcitx 在微信里能用，靠的是应用进程内的 DBus 客户端，而微信这批客户端是原封不动编进去的 fcitx5-qt。守护端这一侧是可以被替换的。
+- **收益超出「微信」**：同一套前端同时解决 GNOME、X11、XWayland、Electron 四类场景，把 xime 从「Hyprland 的输入法」变成「跨桌面的输入法」。
+- **唯一的前置条件**是 Phase 0 那个 100 行实验。它便宜、确定、失败也能立刻止损。
+- 若不打算长期维护第二个前端，**维持 fcitx5 是理性的选择**；xime 保留 Wayland 前端，作为 Hyprland/KDE 下的轻量替代。
+
+---
+
+## 参考
+
+- `fcitx/fcitx5-qt` · `qt5/dbusaddons/interfaces/*.xml`、`qt5/dbusaddons/fcitxqtinputcontextproxy_p.h`、`qt5/platforminputcontext/qfcitxplatforminputcontext.cpp`
+- `fcitx/fcitx5` · `src/frontend/dbusfrontend/dbusfrontend.cpp`
+- `qt/qtwayland` · `src/client/qwaylandtextinputv3.cpp`（对照 Wayland 路径最后一步）
+- 本机证据：`/opt/wechat-universal/wechat` 的符号表；`journalctl --user -u xime-test` 的 commit 记录
