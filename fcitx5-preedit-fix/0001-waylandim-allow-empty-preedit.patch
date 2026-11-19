@@ -1,0 +1,15 @@
+--- a/src/frontend/waylandim/waylandimserverv2.cpp
++++ b/src/frontend/waylandim/waylandimserverv2.cpp
+@@ -694,7 +694,10 @@ void WaylandIMInputContextV2::updatePreeditDelegate(InputContext *ic) const {
+     }
+ 
+-    // Validate not empty and within wayland limit.
+-    if (preedit.textLength() > 0 &&
++    // 允许空预编辑通过：Electron/Chromium 只有在收到「空预编辑」时才会结束
++    // composition。丢掉这条更新会让客户端残留一份幽灵 composition，
++    // 表现为「切换输入法/退格后第一个字符删不掉、光标停在预编辑开头」。
++    // 上游写法 (textLength() > 0) 至今未修。
++    if (preedit.textLength() >= 0 &&
+         preedit.textLength() < WaylandIMServerBase::safeStringLimit) {
+         if (cursorStart < 0) {
+             cursorStart = cursorEnd = preedit.textLength();
