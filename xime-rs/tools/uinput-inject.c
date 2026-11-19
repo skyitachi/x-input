@@ -11,7 +11,9 @@
 // 用法:
 //   uinput-inject move <dx> <dy>      相对移动光标
 //   uinput-inject click [dx] [dy]     可选先移动，再左键单击
-//   uinput-inject type <text>         逐字符输入（a-z A-Z 0-9 空格 回车 退格 . ,）
+//   uinput-inject type <text>         逐字符输入（a-z A-Z 0-9 空格 回车 退格 . , = -）
+//   uinput-inject combo ctrl space    组合键（ctrl/shift/alt/super，键可为字母或 space）
+//   uinput-inject tap shift           单击一个命名键（shift/ctrl/alt/space/esc/字母）
 //
 // 设备创建后固定等 2 秒再发事件：libinput 需要时间枚举并打开新节点，
 // 太早写入事件会被丢弃。
@@ -52,6 +54,13 @@ static int keycode_of(char c) {
     case '\b': return KEY_BACKSPACE;
     case '.':  return KEY_DOT;
     case ',':  return KEY_COMMA;
+    case '=':  return KEY_EQUAL;
+    case '-':  return KEY_MINUS;
+    case '/':  return KEY_SLASH;
+    case ';':  return KEY_SEMICOLON;
+    case '[':  return KEY_LEFTBRACE;
+    case ']':  return KEY_RIGHTBRACE;
+    case '\\': return KEY_BACKSLASH;
     default:   return -1;
     }
 }
@@ -73,6 +82,11 @@ static int create_dev(const char *name, int is_pointer) {
             int kc = keycode_of((char)c);
             if (kc >= 0) ioctl(fd, UI_SET_KEYBIT, kc);
         }
+        // 修饰键不在 keycode_of 的字符表里，单独开位
+        ioctl(fd, UI_SET_KEYBIT, KEY_LEFTCTRL);
+        ioctl(fd, UI_SET_KEYBIT, KEY_LEFTSHIFT);
+        ioctl(fd, UI_SET_KEYBIT, KEY_LEFTALT);
+        ioctl(fd, UI_SET_KEYBIT, KEY_LEFTMETA);
     }
 
     struct uinput_setup us;
@@ -105,7 +119,9 @@ int main(int argc, char **argv) {
             "用法:\n"
             "  uinput-inject move <dx> <dy>\n"
             "  uinput-inject click [dx] [dy]\n"
-            "  uinput-inject type <text>\n");
+            "  uinput-inject type <text>\n"
+            "  uinput-inject combo <mods> <key>\n"
+            "  uinput-inject tap <key>\n");
         return 2;
     }
     const char *cmd = argv[1];
@@ -157,6 +173,73 @@ int main(int argc, char **argv) {
         }
         destroy_dev(fd);
         printf("已输入 %zu 个字符\n", strlen(text));
+        return 0;
+    }
+
+    if (strcmp(cmd, "tap") == 0) {
+        // tap shift / tap space / tap a —— 单击一个命名键（按下+松开）
+        if (argc < 3) { fprintf(stderr, "tap 需要一个键名\n"); return 2; }
+        int kc;
+        if (!strcasecmp(argv[2], "shift"))      kc = KEY_LEFTSHIFT;
+        else if (!strcasecmp(argv[2], "ctrl"))  kc = KEY_LEFTCTRL;
+        else if (!strcasecmp(argv[2], "alt"))   kc = KEY_LEFTALT;
+        else if (!strcasecmp(argv[2], "space")) kc = KEY_SPACE;
+        else if (!strcasecmp(argv[2], "esc"))   kc = KEY_ESC;
+        else kc = keycode_of(argv[2][0]);
+        if (kc < 0) { fprintf(stderr, "未知键 %s\n", argv[2]); return 2; }
+
+        int fd = create_dev("xime-inject-kbd", 0);
+        if (fd < 0) return 1;
+        sleep(2);
+        emit(fd, EV_KEY, kc, 1);
+        emit(fd, EV_SYN, SYN_REPORT, 0);
+        usleep(45000);
+        emit(fd, EV_KEY, kc, 0);
+        emit(fd, EV_SYN, SYN_REPORT, 0);
+        usleep(45000);
+        destroy_dev(fd);
+        printf("已单击 %s\n", argv[2]);
+        return 0;
+    }
+
+    if (strcmp(cmd, "combo") == 0) {
+        // combo ctrl space / combo ctrl+shift f
+        if (argc < 4) { fprintf(stderr, "combo 需要 <修饰键> <键>\n"); return 2; }
+        int mods[4], nmod = 0;
+        char mbuf[64];
+        strncpy(mbuf, argv[2], sizeof mbuf - 1);
+        mbuf[sizeof mbuf - 1] = 0;
+        for (char *t = strtok(mbuf, "+"); t && nmod < 4; t = strtok(NULL, "+")) {
+            if (!strcasecmp(t, "ctrl"))       mods[nmod++] = KEY_LEFTCTRL;
+            else if (!strcasecmp(t, "shift")) mods[nmod++] = KEY_LEFTSHIFT;
+            else if (!strcasecmp(t, "alt"))   mods[nmod++] = KEY_LEFTALT;
+            else if (!strcasecmp(t, "super")) mods[nmod++] = KEY_LEFTMETA;
+            else { fprintf(stderr, "未知修饰键 %s\n", t); return 2; }
+        }
+        int kc = strcasecmp(argv[3], "space") == 0 ? KEY_SPACE : keycode_of(argv[3][0]);
+        if (kc < 0) { fprintf(stderr, "未知键 %s\n", argv[3]); return 2; }
+
+        int fd = create_dev("xime-inject-kbd", 0);
+        if (fd < 0) return 1;
+        sleep(2);
+        for (int i = 0; i < nmod; i++) {
+            emit(fd, EV_KEY, mods[i], 1);
+            emit(fd, EV_SYN, SYN_REPORT, 0);
+            usleep(20000);
+        }
+        emit(fd, EV_KEY, kc, 1);
+        emit(fd, EV_SYN, SYN_REPORT, 0);
+        usleep(40000);
+        emit(fd, EV_KEY, kc, 0);
+        emit(fd, EV_SYN, SYN_REPORT, 0);
+        usleep(20000);
+        for (int i = nmod - 1; i >= 0; i--) {
+            emit(fd, EV_KEY, mods[i], 0);
+            emit(fd, EV_SYN, SYN_REPORT, 0);
+            usleep(20000);
+        }
+        destroy_dev(fd);
+        printf("已发送 %s+%s\n", argv[2], argv[3]);
         return 0;
     }
 
