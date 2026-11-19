@@ -308,11 +308,17 @@ void QFcitxPlatformInputContext::commitString(const QString &str) {
 
 **不做（第一版刻意排除）：**
 
-- `Controller1` 全部（配置界面；`fcitx5-configtool` 会报错，可接受）
 - fcitx4 兼容接口 `org.fcitx.Fcitx.InputContext`（老应用才会用）
 - `InvokeAction`、虚拟键盘、`DeleteSurroundingText`（先返回错误，Qt 会忽略）
 - `SetSurroundingText`（可选，词库联想用；第一版按空处理）
-- GTK 模块（`fcitx5-gtk`）与 IBus 前端
+- GTK 模块（`fcitx5-gtk`）的内部逻辑与 IBus 前端
+
+**`Controller1` 已从「不做」改成「必须做」**（2026-11-19 实测修正）：
+omarchy 的状态栏（`quickshell` 里跑 `indicator.py`）每 500ms 读一次
+`CurrentInputMethodGroup` / `InputMethodGroupInfo` / `CurrentInputMethodInfo`。
+以前这三个方法全部 `Unknown object '/controller'`，指示器直接抛异常退出，
+顶栏的「中／英」就没了——用户感知是「装了 xime 之后别的应用输入法坏了」。
+只需实现读接口 + `SetCurrentIM`，不必实现配置类方法。
 
 ---
 
@@ -327,6 +333,22 @@ void QFcitxPlatformInputContext::commitString(const QString &str) {
 7. **静态构建友好**：`zbus` 是纯 Rust 的 D-Bus 实现，不依赖 `libdbus`，不会破坏 xime「零动态依赖」的目标。这一点要在选库时守住（不要用 `dbus-rs`）。
 8. **多实例/多应用**：每个窗口一个 IC，路径要唯一（例如 `/xime/ic/<n>`），`DestroyIC` 要真的回收，否则状态会串。
 9. **`program` 字段可以白名单**：拿到应用名后，特定程序（如终端、密码框）直接进透传模式，比靠 capability 更可靠。
+10. **`ProcessKeyEvent` 第四个参数是 `isRelease`，不是 `isPress`**（2026-11-19 踩坑）。
+    协议里这个参数叫 `type`、类型是 `b`，很容易想当然当成「是否按下」。写反的后果很隐蔽：
+    靠「松开跟随上次消费结果」还能把字组出来，但**每次新组字的第一个键必定漏给应用**，
+    表现就是在微信里打出 `n你好`、在 GTK 输入框里多出一个 `n`。判断办法是抓一次总线：
+    真实客户端对同一个键先发 `boolean false` 再发 `boolean true`，前者才是按下。
+11. **`FocusIn` 里绝对不能清组字或推空 UI**。微信的 fcitx5-qt 客户端**每敲一个键都会发一次
+    `FocusIn`**，在 `FocusIn` 里推空的 `UpdateClientSideUI` 等于每个键都抹掉拼音，
+    结果是一个字都打不出来。`FocusIn` 只该记账，清组字交给 `FocusOut` / `Reset`。
+12. **上屏顺序：先清组字串，再 `CommitString`**。客户端是「预编辑文本画在光标处」的模型，
+    先上屏再清会让提交内容与残留预编辑叠在一起。
+13. **`CurrentInputMethodInfo` 是 6 个独立字符串出参**，不是单个 `(ssssssb)` 结构体。
+    状态栏脚本直接按 `info[4]` 取标签、`info[5]` 取语言，多包一层结构体就会
+    `IndexError` 把指示器打挂（zbus 里裸元组就是「多个出参」，别画蛇添足再套一层）。
+14. **改完必须重新构建再用**。本次事故的第一层原因是 `target/release/xime` 比源码旧，
+    跑的还是「Password 判成 bit0/bit1」的版本，于是所有键都进了透传分支，
+    微信和 GTK 应用同时打不出字——看着像协议问题，其实是二进制没更新。
 
 ---
 
@@ -388,6 +410,43 @@ DBus 前端的 `on_key` 把 `(keyval, keycode, state)` 还原成 xime 的 `KeyEv
 - **真正的代价是双前端维护**：两套前端共用引擎，但生命周期、焦点语义、按键吞放规则都不一样。
   若不打算长期维护第二个前端，**维持 fcitx5 仍是理性选择**；xime 保留 Wayland 前端，作为
   Hyprland/KDE 下的轻量替代。
+
+---
+
+## 十二、真实输入验证方法（2026-11-19）
+
+「能出字」不等于「输入正确」。第一版原型在微信里能打出「你好」，但缓冲区里其实是
+`n你好`；同时「别的应用输入法像是坏了」。为了把这类问题查干净，改为**三层取证**：
+
+| 层 | 工具 | 看什么 |
+|---|---|---|
+| 协议层 | `tools/dbus-trace.py` | 同一个按键序列喂给 fcitx5 与 xime，逐条 diff 返回值、preedit、候选、`CommitString` |
+| 真实客户端 | `tools/gtk3-probe.py` | GTK3 输入框（走 `im-fcitx5.so`，与 GIMP、gnome 系应用同一条路径），把落进缓冲区的文本实时打出来 |
+| 真实按键 | `tools/uinput-inject` | `/dev/uinput` 虚拟键盘，走合成器的完整 XKB，避免 wtype 精简 keymap 导致 `nihao` 变 `12345` |
+
+配合 `dbus-monitor --session`，可以直接看到「真实客户端发出了什么、xime 回了什么」。
+
+### 验证清单（当前全部通过）
+
+| 场景 | 期望 | 结果 |
+|---|---|---|
+| 首键 `n` 是否漏给应用 | 缓冲区只出现 `你好` | ✅（修 `isRelease` 前是 `n你好`） |
+| 数字键选词 | `nihao` + `3` → `呢好` | ✅ |
+| 标点 | `nihao` + `.` → `你好.` | ✅ |
+| 退格 | 组字中删拼音；无组字时删文本 | ✅ |
+| 长词 | `zhongguo` → 中国；`renmin` → 人民 | ✅ |
+| 微信候选窗 | 客户端自绘，9 条候选 | ✅ 截图留档 `tools/phase0-candidate-window.png` |
+| 顶栏指示器 | 每 500ms 轮询成功，显示「中」 | ✅（此前 `IndexError` 直接挂掉） |
+
+### 三个必须记住的结论
+
+1. **先确认观察手段可靠，再怀疑代码**。这次一半时间花在测试工具自身的 bug 上：
+   `uinput-inject` 的数字表整体偏移一位（`3` 发成 `KEY_4`），`dbus-trace.py` 的
+   press 标志也写反了，一度把「工具问题」误判成「引擎选词错位」。
+2. **`FocusIn` 是每个键都会来的**，微信尤其如此（见坑 11）。任何在 `FocusIn` 里
+   「重置一下更干净」的想法都会让输入法彻底不工作。
+3. **状态栏是硬需求**。`Controller1` 缺一个方法，用户看到的就是「输入法坏了」，
+   哪怕打字本身是通的。
 
 ---
 

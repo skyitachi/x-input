@@ -121,6 +121,17 @@ xime --dbus --verbose     # 需要先停掉 fcitx5，服务名唯一
 `fcitx5-qt` / `fcitx5-gtk` 模块（只装模块，不需要跑 fcitx5 守护进程）。
 协议细节与实测记录见 `docs/fcitx5-dbus-frontend.md`。
 
+它还实现了 `/controller` 上的 `org.fcitx.Fcitx.Controller1`（读接口 +
+`SetCurrentIM`），所以桌面顶栏的「中／英」指示器、`fcitx5-remote -n`
+这类小工具照常工作——不实现的话状态栏会直接抛异常退掉，用户看到的就是
+「装了它别的应用输入法坏了」。想让它常驻：
+
+```sh
+systemd-run --user --unit=xime-dbus --collect -p Restart=always \
+  /path/to/xime --dbus
+systemctl --user stop xime-dbus && systemctl --user start omarchy-fcitx5   # 切回
+```
+
 ---
 
 ## 三、架构
