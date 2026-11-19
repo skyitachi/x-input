@@ -6,6 +6,10 @@ description = "Wayland 原生中文输入法（纯 Rust，静态链接）"
 
 [dependencies]
 libc = "0.2"
+# DBus 前端用；只在 --dbus 路径上被引用，Wayland 路径不受影响。
+# 选 zbus 而非手写：静态链接后仅 +1.4M，而手写 DBus（认证 + 消息编解码 +
+# 数组/结构体对齐）约需 1400 行，出错代价高。
+zbus = "6.3"
 
 # 单包零依赖的前提是静态链接，这几项对体积影响很大
 [profile.release]

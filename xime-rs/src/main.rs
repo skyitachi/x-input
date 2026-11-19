@@ -2,6 +2,7 @@ mod config;
 mod dict;
 mod en;
 mod engine;
+mod fcitx_dbus;
 mod font;
 mod keymap;
 mod popup;
@@ -1021,6 +1022,9 @@ fn usage() {
     println!("  --en                启动即英文模式（默认不出候选窗，按键直接进应用，与 fcitx5 一致）");
     println!("  --en-completion     英文模式启用前缀补全 + 候选窗（旧行为，按需开启）");
     println!("  --check             诊断：检查协议可用性与接线状态");
+    println!("  --dbus              以 fcitx5 DBus 前端运行（接管 org.fcitx.Fcitx5）");
+    println!("                      用于微信/WPS/Electron/GNOME/X11 等自带 fcitx5-qt 的程序；");
+    println!("                      与 fcitx5 及本程序的 Wayland 前端互斥，二者只能留一个");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
     println!("  --render-test PATH [拼音]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
     println!("  --probe             枚举合成器提供的全局对象");
@@ -1167,6 +1171,14 @@ fn main() {
     }
     if args.iter().any(|a| a == "--probe") {
         probe();
+        return;
+    }
+    if args.iter().any(|a| a == "--dbus") {
+        let verbose = args.iter().any(|a| a == "--verbose");
+        if let Err(e) = fcitx_dbus::run(variant, verbose) {
+            eprintln!("xime: {e}");
+            std::process::exit(1);
+        }
         return;
     }
     if args.iter().any(|a| a == "--check") {
