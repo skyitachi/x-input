@@ -581,6 +581,14 @@ impl InputContext {
     #[zbus(signal)]
     async fn commit_string(emitter: &SignalEmitter<'_>, text: &str) -> zbus::Result<()>;
 
+    #[zbus(name = "UpdateFormattedPreedit")]
+    #[zbus(signal)]
+    async fn update_formatted_preedit(
+        emitter: &SignalEmitter<'_>,
+        text: Vec<(String, i32)>,
+        cursorpos: i32,
+    ) -> zbus::Result<()>;
+
     #[zbus(name = "UpdateClientSideUI")]
     #[zbus(signal)]
     #[allow(clippy::too_many_arguments)]
@@ -677,25 +685,59 @@ impl InputContext {
         self.sync_variant();
         let out = self.handle_key(keyval, state, release);
 
-        if self.shift_released(keyval, release) {
-            // Shift 单击松开：切换中英，并清掉两边组字
+        // 切换中英时先把残留的组字串取出来，随后原样提交 —— 与 fcitx5 一致，
+        // 用户按 Shift 不该把已经敲的拼音丢掉。
+        let mut leftover: Option<String> = None;
+        let toggled = self.shift_released(keyval, release);
+        if toggled {
             self.global.toggle();
             if let Ok(mut st) = self.inner.lock() {
+                let s = if st.engine.active() {
+                    st.engine.input.clone()
+                } else if st.en.active() {
+                    st.en.raw()
+                } else {
+                    String::new()
+                };
                 st.reset_all();
+                if !s.is_empty() {
+                    leftover = Some(s);
+                }
             }
         }
 
-        // 顺序很重要：先把组字串清空（客户端据此撤掉预编辑），再上屏。
-        // 反过来的话，客户端会在旧组字串仍在显示时插入文本。
+        let has_commit =
+            out.commit.as_deref().is_some_and(|s| !s.is_empty()) || leftover.is_some();
+
+        // 顺序严格照 fcitx5：
+        //   有提交时  UI(收候选窗) → CommitString → FormattedPreedit(空)
+        //   只是组字  UI → FormattedPreedit
+        // 把「清 preedit」提前到 Commit 之前，GTK 会按旧 preedit 定位光标，
+        // 表现为插入文本后光标跳回行首。
         if let Some(snap) = out.ui {
-            self.push_ui(&emitter, snap).await;
+            if has_commit {
+                self.push_ui_client(&emitter, &snap).await;
+            } else {
+                self.push_ui(&emitter, snap).await;
+            }
+        } else if toggled {
+            let empty = Snapshot::empty();
+            if has_commit {
+                self.push_ui_client(&emitter, &empty).await;
+            } else {
+                self.push_ui(&emitter, empty).await;
+            }
         }
 
-        if let Some(text) = out.commit {
+        for text in [out.commit, leftover].into_iter().flatten() {
             if !text.is_empty() {
                 self.global.log(&format!("ic{} commit {:?}", self.id, text));
                 let _ = Self::commit_string(&emitter, &text).await;
             }
+        }
+
+        if has_commit {
+            self.push_formatted(&emitter, &Snapshot::empty()).await;
         }
 
         if self.global_verbose() {
@@ -794,7 +836,14 @@ impl InputContext {
         self.push_ui(emitter, snap).await;
     }
 
+    /// 组字中的常规刷新：候选窗 + 输入框内预编辑，两条一起发
     async fn push_ui(&self, emitter: &SignalEmitter<'_>, snap: Snapshot) {
+        self.push_ui_client(emitter, &snap).await;
+        self.push_formatted(emitter, &snap).await;
+    }
+
+    /// 只发 UpdateClientSideUI（候选窗、辅助行、像素级定位）
+    async fn push_ui_client(&self, emitter: &SignalEmitter<'_>, snap: &Snapshot) {
         let preedit = if snap.preedit.is_empty() {
             Vec::new()
         } else {
@@ -826,6 +875,20 @@ impl InputContext {
             snap.has_next,
         )
         .await;
+    }
+
+    /// 只发 UpdateFormattedPreedit（输入框内的下划线预编辑）
+    async fn push_formatted(&self, emitter: &SignalEmitter<'_>, snap: &Snapshot) {
+        let seg = if snap.preedit.is_empty() {
+            Vec::new()
+        } else {
+            vec![(snap.preedit.clone(), 1)]
+        };
+        // cursorpos 是**预编辑内部**的光标偏移，必须给实际长度：
+        // 写 0 会让客户端把光标摆在拼音最前面，看起来就是「光标跳到行首」，
+        // 之后敲的字也插到拼音前面去。空串时给 0（此时该字段无意义）。
+        let cursor = snap.preedit.chars().count() as i32;
+        let _ = Self::update_formatted_preedit(emitter, seg, cursor).await;
     }
 }
 
