@@ -10,6 +10,7 @@ mod proto;
 mod render;
 mod shm;
 mod single_instance;
+mod ui_slint;
 mod wire;
 mod zh;
 
@@ -83,6 +84,9 @@ struct Xime {
     /// 配置文件指纹与上次检查时间（热重载用）
     cfg_stamp: u64,
     cfg_checked: Option<std::time::Instant>,
+    /// Slint 候选窗渲染器。Some = 用 Slint，None = 手写 Canvas（--legacy-ui）。
+    /// 进程级只初始化一次，Wayland 前端独占。
+    slint_ui: Option<ui_slint::SlintUi>,
 }
 
 impl Xime {
@@ -94,6 +98,7 @@ impl Xime {
         start_english: bool,
         en_passthrough: bool,
         args: Vec<String>,
+        use_slint: bool,
     ) -> Option<Xime> {
         let conn = match Conn::connect() {
             Ok(c) => c,
@@ -105,6 +110,22 @@ impl Xime {
         dict::init();
         let mut engine = Engine::new();
         engine.set_variant(variant);
+        // Slint UI：set_platform 是进程级一次性操作，这里只在 Wayland 前端初始化。
+        // 失败时（例如平台已设置）自动回退到手写渲染，不让输入法起不来。
+        let slint_ui = if use_slint {
+            match ui_slint::SlintUi::new() {
+                Some(ui) => {
+                    eprintln!("xime: 候选窗使用 Slint 软件渲染");
+                    Some(ui)
+                }
+                None => {
+                    eprintln!("xime: Slint 初始化失败，回退到手写渲染");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Some(Xime {
             conn,
             reg: 0,
@@ -145,6 +166,7 @@ impl Xime {
             args,
             cfg_stamp: config::stamp(),
             cfg_checked: None,
+            slint_ui,
         })
     }
 
@@ -275,6 +297,10 @@ impl Xime {
                 self.log("deactivate");
                 self.engine.reset();
                 self.popup_hide()?;
+                // grab 键盘对象在 deactivate 后由合成器销毁，必须清零；
+                // 否则下次 activate 时 self.grab != 0 会跳过重新 grab，
+                // 输入法就再也收不到按键（表现为打字直接进应用、候选窗不弹）。
+                self.grab = 0;
                 proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
                 proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
             }
@@ -852,17 +878,28 @@ impl Xime {
             return self.popup_hide();
         }
 
-        let probe = Canvas::new(1, 1);
-        let (w, h) = popup::measure(&probe, &shown, &self.style);
-        if w <= 0 || h <= 0 {
-            return Ok(());
-        }
-        self.ensure_buffer(w, h)?;
+        // 渲染来源：Slint 布局 + 软件光栅（默认），或手写 Canvas（--legacy-ui）。
+        // 两条路产出都是 ARGB8888 像素 + 尺寸，后面的 shm 上传流程完全相同。
+        let (w, h, pixels): (i32, i32, Vec<u32>) = if let Some(ui) = self.slint_ui.as_mut() {
+            let (w, h) = ui.render(&shown);
+            if w <= 0 || h <= 0 {
+                return self.popup_hide();
+            }
+            (w, h, ui.out().to_vec())
+        } else {
+            let probe = Canvas::new(1, 1);
+            let (w, h) = popup::measure(&probe, &shown, &self.style);
+            if w <= 0 || h <= 0 {
+                return Ok(());
+            }
+            let mut c = Canvas::new(w, h);
+            popup::paint(&mut c, &shown, &self.style, mode);
+            (w, h, c.px)
+        };
 
-        let mut c = Canvas::new(w, h);
-        popup::paint(&mut c, &shown, &self.style, mode);
+        self.ensure_buffer(w, h)?;
         if let Some(b) = &mut self.buf {
-            b.shm.upload(&c.px);
+            b.shm.upload(&pixels);
         }
         if let Some(b) = &self.buf {
             proto::surface_attach(&mut self.conn, self.popup_surf, Some(b.buffer), 0, 0)?;
@@ -1013,7 +1050,8 @@ fn usage() {
     println!("用法: xime [选项]");
     println!("  --verbose           打印协议与按键处理细节");
     println!("  --inline-candidates 把候选塞进 preedit 由应用字体渲染（不建候选窗）");
-    println!("  --popup FORM        候选窗形态: horizontal(默认) | vertical | grid");
+    println!("  --legacy-ui         候选窗用手写 Canvas 渲染（默认用 Slint 软件渲染）；对照/救急用");
+    println!("  --popup FORM        候选窗形态: horizontal(默认) | vertical | grid（Slint UI 暂固定横排）");
     println!("  --popup-cols N      网格形态的列数（默认 3）");
     println!("  --theme NAME        候选窗主题: light(默认) | dark | fcitx:NAME | 主题文件路径");
     println!("                      例: --theme fcitx:omarchy  直接用 fcitx5 的主题");
@@ -1028,6 +1066,7 @@ fn usage() {
     println!("                      与 fcitx5 及本程序的 Wayland 前端互斥，二者只能留一个");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
     println!("  --render-test PATH [拼音]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
+    println!("  --ui-probe PATH [拼音]     用 Slint 软件渲染器画候选条并写 BMP（校验 Slint UI）");
     println!("  --probe             枚举合成器提供的全局对象");
     println!("  --bench             解码性能测试");
     println!("  --keymap-test PATH  解析一份 XKB keymap 并抽查按键");
@@ -1170,6 +1209,12 @@ fn main() {
         render_test(path, input, &style, variant, english);
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--ui-probe") {
+        let path = args.get(i + 1).map(|s| s.as_str()).unwrap_or("/tmp/slint.bmp");
+        let input = args.get(i + 2).map(|s| s.as_str()).unwrap_or("你好");
+        ui_probe(path, input);
+        return;
+    }
     if args.iter().any(|a| a == "--probe") {
         probe();
         return;
@@ -1202,6 +1247,8 @@ fn main() {
     // 前缀补全改成显式开启（--en-completion），因为它会在每个词上打扰输入。
     let en_completion = args.iter().any(|a| a == "--en-completion");
     let en_passthrough = args.iter().any(|a| a == "--en-passthrough") || !en_completion;
+    // 候选窗 UI：默认 Slint；--legacy-ui 回退到手写 Canvas（对照/救急用）。
+    let use_slint = !args.iter().any(|a| a == "--legacy-ui");
 
     // 单实例：systemd、KWin、XDG autostart、手工启动都可能在拉起 xime，
     // 谁先拿到锁谁当输入法，后来者安静退出（退出码 0，免得 systemd 反复重启）。
@@ -1218,6 +1265,7 @@ fn main() {
         english,
         en_passthrough,
         args.clone(),
+        use_slint,
     ) {
         Some(x) => x,
         None => std::process::exit(1),
@@ -1435,6 +1483,36 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
             style.theme.name.as_str(),
             label,
             shown.len()
+        ),
+        Err(e) => eprintln!("写 BMP 失败: {e}"),
+    }
+}
+
+/// Slint 候选条渲染探针：用 Slint 软件渲染器画一条候选并写 BMP，供肉眼校验。
+fn ui_probe(path: &str, input: &str) {
+    dict::init();
+    let mut e = Engine::new();
+    for c in input.chars() {
+        e.push_char(c);
+    }
+    let cands: Vec<String> = e.cands.iter().take(6).cloned().collect();
+    if cands.is_empty() {
+        eprintln!("无候选");
+        std::process::exit(1);
+    }
+    let mut ui = match ui_slint::SlintUi::new() {
+        Some(u) => u,
+        None => {
+            eprintln!("Slint 平台初始化失败（可能测试进程里已有平台）");
+            std::process::exit(1);
+        }
+    };
+    let (w, h) = ui.render(&cands);
+    match ui.write_bmp(path, true) {
+        Ok(()) => println!(
+            "已写出 {path}  {w}x{h}  Slint 软件渲染  候选 {} 条: {:?}",
+            cands.len(),
+            cands
         ),
         Err(e) => eprintln!("写 BMP 失败: {e}"),
     }

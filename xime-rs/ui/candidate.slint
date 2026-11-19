@@ -1,0 +1,86 @@
+// 候选条的 Slint 界面。
+//
+// 这里只管「长什么样」：布局、间距、圆角、配色都由 Slint 描述，
+// 尺寸也由 Slint 的布局约束算出来，不再用 popup.rs 里的手写度量。
+//
+// 注意：这不是一个普通窗口。宿主进程把它渲染到内存，再把像素挂到
+// zwp_input_popup_surface_v2 上，所以 background 必须是透明的，
+// 真正的底色由里面那层圆角矩形画。
+
+export global Theme {
+    in-out property <color> bg: #1f1f1f;
+    in-out property <color> border: #3a3a3a;
+    in-out property <color> text: #e8e8e8;
+    in-out property <color> hint: #8f8f8f;
+    in-out property <color> sel-bg: #2f6fbf;
+    in-out property <color> sel-text: #ffffff;
+
+    in-out property <length> radius: 11px;
+    in-out property <length> pad-x: 11px;
+    in-out property <length> pad-y: 6px;
+    in-out property <length> item-pad-x: 7px;
+    in-out property <length> item-gap: 4px;
+    in-out property <length> font-size: 14px;
+    in-out property <length> row-height: 26px;
+}
+
+component Chip inherits Rectangle {
+    in property <int> index: 0;
+    in property <string> label: "";
+    in property <bool> selected: false;
+
+    height: Theme.row-height;
+    border-radius: 6px;
+    background: selected ? Theme.sel-bg : transparent;
+
+    HorizontalLayout {
+        padding-left: Theme.item-pad-x;
+        padding-right: Theme.item-pad-x;
+        spacing: 3px;
+
+        Text {
+            text: "\{index}.";
+            color: selected ? Theme.sel-text : Theme.hint;
+            font-size: Theme.font-size - 2px;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: label;
+            color: selected ? Theme.sel-text : Theme.text;
+            font-size: Theme.font-size;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component CandidateBar inherits Window {
+    in property <[string]> candidates: [];
+
+    background: transparent;
+
+    // panel 的宽高绑定到内容布局的固有尺寸，而不是铺满 Window。
+    // 这样裁剪 alpha 得到的包围盒就是候选条本身，不含多余透明留白。
+    panel := Rectangle {
+        width: items.preferred-width;
+        height: items.preferred-height;
+        border-radius: Theme.radius;
+        background: Theme.bg;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        items := HorizontalLayout {
+            padding-left: Theme.pad-x;
+            padding-right: Theme.pad-x;
+            padding-top: Theme.pad-y;
+            padding-bottom: Theme.pad-y;
+            spacing: Theme.item-gap;
+
+            for c[i] in candidates : Chip {
+                index: i + 1;
+                label: c;
+                selected: i == 0;
+            }
+        }
+    }
+}

@@ -10,6 +10,16 @@ libc = "0.2"
 # 选 zbus 而非手写：静态链接后仅 +1.4M，而手写 DBus（认证 + 消息编解码 +
 # 数组/结构体对齐）约需 1400 行，出错代价高。
 zbus = "6.3"
+# 候选窗 UI。只取布局与软件光栅，不要 winit/femtovg 后端：
+# Wayland 下普通 xdg_toplevel 无法自己定位，候选窗必须是 input_popup_surface，
+# 所以 Slint 只负责画到内存，像素再由我们交给合成器。
+# compat-1-18 是 1.19+ 的强制前向兼容开关，关掉 default-features 时必须显式带上。
+slint = { version = "1", default-features = false, features = ["std", "renderer-software", "compat-1-18"] }
+
+[build-dependencies]
+# 必须用默认 feature：软件渲染器要把字体/图片按 software 格式嵌入，
+# 关掉后编译期嵌入格式与运行时 renderer-software 对不上。
+slint-build = "1"
 
 # 单包零依赖的前提是静态链接，这几项对体积影响很大
 [profile.release]
