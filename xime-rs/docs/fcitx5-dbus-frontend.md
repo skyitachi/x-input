@@ -305,6 +305,7 @@ void QFcitxPlatformInputContext::commitString(const QString &str) {
 - IC 方法：`FocusIn`、`FocusOut`、`Reset`、`SetCapability`、`SetSupportedCapability`、`SetCursorRect`、`SetCursorRectV2`、`ProcessKeyEvent`、`SelectCandidate`、`PrevPage`、`NextPage`、`DestroyIC`
 - IC 信号：`CommitString`、`UpdateClientSideUI`、`CurrentIM`
 - 能力位解析：`Password` / `Sensitive` → 透传，`ClientSideInputPanel` → 客户端画窗
+- 候选翻页、英文前缀补全、简繁切换（第 13 章）：第一版未做，第二轮补齐
 
 **不做（第一版刻意排除）：**
 
@@ -447,6 +448,111 @@ DBus 前端的 `on_key` 把 `(keyval, keycode, state)` 还原成 xime 的 `KeyEv
    「重置一下更干净」的想法都会让输入法彻底不工作。
 3. **状态栏是硬需求**。`Controller1` 缺一个方法，用户看到的就是「输入法坏了」，
    哪怕打字本身是通的。
+
+---
+
+## 十三、第二轮补齐：翻页、英文、简繁、密码框（2026-11-19）
+
+第一版只做到「能出字」，这一轮把 Wayland 前端已有的四件事补上，并顺手查明
+了一个环境级陷阱。
+
+### 13.1 候选翻页
+
+协议侧本来就有两条路，都要实现：
+
+- `ProcessKeyEvent` 收 `-` / `=` / `PageUp` / `PageDown`；
+- 客户端点候选窗箭头时直接调 `PrevPage` / `NextPage`。
+
+两者共用同一份 `page` 状态（`CtxInner.page`，单位是页）。信号只能从方法里发，
+所以 `PrevPage` / `NextPage` / `SelectCandidate` 必须注入
+`#[zbus(signal_emitter)]`；空实现的话，客户端点了箭头什么也不会发生。
+
+**页内序号**是这一节的坑：`SelectCandidate(i)` 与数字键 `1`-`9` 给的 `i` 都是
+「当前页内第几条」，不是全局序号，取候选要写成 `page * PAGE_SIZE + i`。
+写错的话第 2 页按 `1` 会拿到第 1 页的首条，看起来像「翻页没生效」。
+
+`UpdateClientSideUI` 的 `hasPrev` / `hasNext` 要如实反映边界，客户端据此显示
+箭头；到边界时按键仍要吞掉（返回 true），否则 `-` 会被应用当成减号打出来。
+
+**另一个发现：引擎原本就只产 9 条候选。** `engine.rs` 的 `BEST`（每个位置保留
+几条路径）原本是 9，最终候选表因此最多 9 条，`CAND_MAX = 128` 只是上限摆设。
+翻页代码写对了也翻不到第 2 页。把 `BEST` 提到 27、`HITS` 提到 6 之后，`nihao`
+有 27 条（3 页），全串 `zhonghuarenmingongheguo` 的单次解码耗时增加约 1ms
+（30 次进程内 `--query` 从 147ms 到 186ms，含进程启动），可以接受。
+
+### 13.2 英文模式（前缀补全）
+
+第一版英文态是「一律透传」，等于没有英文输入支持。现在复用 `src/en.rs` 的
+`EnEngine`（与 Wayland 前端同一套词表与大小写逻辑）：
+
+| 键 | 行为 |
+|---|---|
+| 字母 | 进缓冲，实时出补全候选 |
+| 空格 | 提交首候选，**返回 false** 让空格照常进应用 |
+| 回车 | 提交「用户敲的原始字母」，回车同样透传 |
+| `1`-`9` | 选补全词 |
+| Esc | 放弃 |
+
+关键在空格：`ProcessKeyEvent` 返回 `true` 时客户端不再处理这个键，所以
+「提交 + 吞键」会让 `hel␣` 变成 `hello`（空格丢了）。正确做法是
+`commit=Some(词), consumed=false`，让应用自己把空格插进去。
+
+### 13.3 简繁切换 Ctrl+Shift+F
+
+`Global.variant` 是全局的，切换后所有上下文在下次按键时经 `sync_variant()`
+同步；当前上下文立刻 `engine.set_variant()` 重算，所以候选窗当场变繁体。
+必须在「其它 Ctrl 组合一律透传」之前处理，否则 `Ctrl+Shift+F` 会被当成普通
+`Ctrl+F`。
+
+### 13.4 密码框
+
+`SetCapability` 里只要带 `Password`(bit3) 或 `Sensitive`(bit36) 就进透传：
+字母、数字、空格全部返回 false，且**立即丢弃残留组字**（否则上一个普通输入框
+的拼音会跟着进密码框）。实测：`nihao` 五键全部 false、无 CommitString、
+无候选信号；从普通框切到密码框时 preedit 也被清空。
+
+### 13.5 环境陷阱：`Ctrl+Space` 可能根本到不了应用
+
+真实按键测试里 `Ctrl+Space` 切不了中英，但 DBus 层自测是通的。原因不在协议：
+
+```sh
+$ hyprctl binds -j | jq '.[] | select(.key=="SPACE")'
+{ "modmask": 4, "dispatcher": "__lua", ... }   # 4 = Ctrl，omarchy 的全局绑定
+```
+
+按键在合成器层被当成全局快捷键吃掉了，应用和输入法都收不到。判断方法：
+`hyprctl` 查绑定 + 直接读 `Controller1.CurrentInputMethod` 有没有变。
+
+这类环境下用 **Shift 单击**（`shift_pending` + 松开判定）切中英，它是唯一
+不经过合成器绑定的路径。真 fcitx5 在同一台机器上同样切不动，不是 xime 的问题。
+
+### 13.6 无人值守回归
+
+`tools/dbus-selftest.py` 把上述行为固化成 40 项断言，不需要人敲键、不需要看屏幕：
+
+```sh
+python3 tools/dbus-selftest.py       # 40/40 通过
+python3 tools/dbus-selftest.py -v    # 打印每步 UI 快照
+```
+
+覆盖：翻页内容不重叠、页内序号选词、末页不越界、`PrevPage`/`NextPage` 方法、
+英文补全与空格透传、`Ctrl+Letter` 透传、简繁切换、密码框全透传。
+
+真实按键侧另外验证（`uinput-inject` + `gtk3-probe.py` + 微信截图）：
+
+| 场景 | 结果 |
+|---|---|
+| GTK：`nihao` → `=` → `1` | 缓冲区 `尼好`（第 2 页首条）✅ |
+| GTK：Shift 单击 → `hel␣` | 缓冲区 `help `（空格保留）✅ |
+| 微信：`nihao` 第 1 页 | 9 条候选，`你好` 打头 ✅ |
+| 微信：`=` 第 2 页 | `尼好 你耗 妮好 妳号 泥号 尼号 妮号 呢灏 呢豪` ✅ |
+| 微信：第 2 页按 `1` | 输入框得到干净的 `尼好`，候选窗收起 ✅ |
+| 微信：Shift 切英文后 `ni` | 客户端自绘英文补全候选 ✅ |
+
+`uinput-inject` 这轮也补了两件事：`combo <mods> <key>`（组合键）与
+`tap <key>`（单击命名键，用来测 Shift 切换）。注意 `click dx dy` 是**相对位移**，
+不是绝对坐标——想点某个位置先 `hyprctl cursorpos` 读出当前位置再算差值，
+否则会像这轮一样把鼠标甩到屏幕角落、点到别的窗口上去。
 
 ---
 

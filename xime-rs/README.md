@@ -121,6 +121,22 @@ xime --dbus --verbose     # 需要先停掉 fcitx5，服务名唯一
 `fcitx5-qt` / `fcitx5-gtk` 模块（只装模块，不需要跑 fcitx5 守护进程）。
 协议细节与实测记录见 `docs/fcitx5-dbus-frontend.md`。
 
+按键行为与 Wayland 前端保持一致，另有几处这个前端特有的：
+
+| 按键 | 行为 |
+|---|---|
+| `1`–`9` | 选当前页的第 n 条（翻页后仍按页内序号算） |
+| `-` / `=`、PageUp / PageDown | 上一页 / 下一页（每页 9 条，边界不循环） |
+| 空格 / 回车 | 中文提交当前页首候选；英文提交补全词且**不吞空格/回车** |
+| Shift 单击 | 中英切换（英文态是前缀补全，不是直通） |
+| Ctrl+Shift+F | 简繁切换 |
+| Ctrl+其它 | 一律透传（`Ctrl+C` 不会被当成字母 `c`） |
+| 密码框 / PIN | 客户端声明 `Password`/`Sensitive` 时全键透传，且丢掉残留组字 |
+
+注意 `Ctrl+Space`：omarchy 的 Hyprland 默认把它绑成了全局快捷键（modmask 4），
+按键在合成器层就被吃掉，应用和输入法都收不到——这种环境下用 Shift 单击切中英。
+判断方法见文档里的「按键到底有没有送到」一节。
+
 它还实现了 `/controller` 上的 `org.fcitx.Fcitx.Controller1`（读接口 +
 `SetCurrentIM`），所以桌面顶栏的「中／英」指示器、`fcitx5-remote -n`
 这类小工具照常工作——不实现的话状态栏会直接抛异常退掉，用户看到的就是
