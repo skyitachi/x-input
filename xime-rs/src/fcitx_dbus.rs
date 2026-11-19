@@ -22,6 +22,7 @@ use crate::engine::Engine;
 use crate::zh::Variant;
 
 const IM_PATH: &str = "/org/freedesktop/portal/inputmethod";
+const CONTROLLER_PATH: &str = "/controller";
 const IC_PREFIX: &str = "/org/freedesktop/portal/inputcontext";
 const SERVICE_MAIN: &str = "org.fcitx.Fcitx5";
 /// fcitx5 会同时占这个老名字，客户端两种都可能查
@@ -66,6 +67,11 @@ struct GlobalInner {
     next_id: u32,
 }
 
+/// 状态栏（omarchy 的 indicator）认这两个名字：keyboard-us = 英文直通，
+/// pinyin = 中文组字。它通过 Controller1.SetCurrentIM 来切换。
+const IM_EN: &str = "keyboard-us";
+const IM_ZH: &str = "pinyin";
+
 impl Global {
     fn new(variant: Variant, verbose: bool) -> Arc<Global> {
         Arc::new(Global {
@@ -87,6 +93,32 @@ impl Global {
 
     fn chinese(&self) -> bool {
         self.inner.lock().map(|g| g.chinese).unwrap_or(true)
+    }
+
+    /// 按输入法名设置中英状态，供状态栏 / 外部工具调用
+    fn set_im(&self, name: &str) -> bool {
+        let zh = match name {
+            IM_ZH => true,
+            IM_EN => false,
+            _ => return false,
+        };
+        let mut g = match self.inner.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        g.chinese = zh;
+        if g.verbose {
+            eprintln!("xime-dbus: 切到 {name}（{}）", if zh { "中文" } else { "英文" });
+        }
+        true
+    }
+
+    fn im_name(&self) -> &'static str {
+        if self.chinese() {
+            IM_ZH
+        } else {
+            IM_EN
+        }
     }
 
     fn toggle(&self) -> bool {
@@ -130,6 +162,16 @@ struct Snapshot {
     sel: usize,
 }
 
+impl Snapshot {
+    fn empty() -> Snapshot {
+        Snapshot {
+            preedit: String::new(),
+            cands: Vec::new(),
+            sel: 0,
+        }
+    }
+}
+
 impl Outcome {
     fn ignore() -> Outcome {
         Outcome {
@@ -155,7 +197,8 @@ struct CtxInner {
     sensitive: bool,
     /// Shift 按下但未松开：松开时决定是切换中英还是输入大写
     shift_pending: bool,
-    /// 上次按键是否被消费，松开事件跟着走，避免「按下吞了、松开没吞」的抖动
+    /// 上一次「按下」是否被消费。松开事件跟着它走，避免「按下吞了、松开没吞」
+    /// 导致客户端把字符又插进缓冲区。
     last_consumed: bool,
 }
 
@@ -193,18 +236,22 @@ impl InputContext {
         }
     }
 
-    /// 锁内完成按键处理，返回要在锁外执行的动作
-    fn handle_key(&self, keyval: u32, state: u32, press: bool) -> Outcome {
+    /// 锁内完成按键处理，返回要在锁外执行的动作。
+    ///
+    /// `release` 对应 DBus 上的第四个参数（协议名就叫 `isRelease`）：**true 是松开**。
+    /// 早先当成 isPress 用，靠「松开事件跟随上次消费结果」蒙对了组字，
+    /// 但新组字的第一个键必然漏给应用（此时 last_consumed 还是 false），
+    /// 于是出现「n你好」这种首字母残留。
+    fn handle_key(&self, keyval: u32, state: u32, release: bool) -> Outcome {
         let mut st = match self.inner.lock() {
             Ok(s) => s,
             Err(_) => return Outcome::ignore(),
         };
 
         // 松开事件：跟随上一次按下的消费结果
-        if !press {
-            let c = st.last_consumed;
+        if release {
             return Outcome {
-                consumed: c,
+                consumed: st.last_consumed,
                 commit: None,
                 ui: None,
             };
@@ -256,11 +303,7 @@ impl InputContext {
                 return Outcome {
                     consumed: true,
                     commit: Some(text),
-                    ui: Some(Snapshot {
-                        preedit: String::new(),
-                        cands: Vec::new(),
-                        sel: 0,
-                    }),
+                    ui: Some(Snapshot::empty()),
                 };
             }
             // Esc：放弃这次组字
@@ -271,11 +314,7 @@ impl InputContext {
                 return Outcome {
                     consumed: true,
                     commit: None,
-                    ui: Some(Snapshot {
-                        preedit: String::new(),
-                        cands: Vec::new(),
-                        sel: 0,
-                    }),
+                    ui: Some(Snapshot::empty()),
                 };
             }
             // 退格
@@ -300,11 +339,7 @@ impl InputContext {
                     return Outcome {
                         consumed: true,
                         commit: Some(w),
-                        ui: Some(Snapshot {
-                            preedit: String::new(),
-                            cands: Vec::new(),
-                            sel: 0,
-                        }),
+                        ui: Some(Snapshot::empty()),
                     };
                 }
                 // 超出候选范围：不吞键
@@ -342,11 +377,7 @@ impl InputContext {
             return Outcome {
                 consumed: false,
                 commit: Some(text),
-                ui: Some(Snapshot {
-                    preedit: String::new(),
-                    cands: Vec::new(),
-                    sel: 0,
-                }),
+                ui: Some(Snapshot::empty()),
             };
         }
 
@@ -402,6 +433,8 @@ impl InputContext {
     ) -> zbus::Result<()>;
 
     async fn focus_in(&self) {
+        // 只记状态，绝不在这里清组字/推空 UI：微信每敲一个键都会发一次
+        // FocusIn，清一次就等于把用户正在打的拼音抹掉。
         if let Ok(mut st) = self.inner.lock() {
             st.focused = true;
         }
@@ -474,19 +507,25 @@ impl InputContext {
         keyval: u32,
         keycode: u32,
         state: u32,
-        press: bool,
+        release: bool,
         _time: u32,
     ) -> bool {
         self.sync_variant();
-        let out = self.handle_key(keyval, state, press);
+        let out = self.handle_key(keyval, state, release);
 
-        if self.global_chinese_changed_to_shift_release(keyval, press) {
+        if self.shift_released(keyval, release) {
             // Shift 单击松开：切换中英，并清掉组字
             self.global.toggle();
             if let Ok(mut st) = self.inner.lock() {
                 st.engine.reset();
                 st.sel = 0;
             }
+        }
+
+        // 顺序很重要：先把组字串清空（客户端据此撤掉预编辑），再上屏。
+        // 反过来的话，客户端会在旧组字串仍在显示时插入文本。
+        if let Some(snap) = out.ui {
+            self.push_ui(&emitter, snap).await;
         }
 
         if let Some(text) = out.commit {
@@ -496,13 +535,9 @@ impl InputContext {
             }
         }
 
-        if let Some(snap) = out.ui {
-            self.push_ui(&emitter, snap).await;
-        }
-
         if self.global_verbose() {
             self.global.log(&format!(
-                "ic{} 按键 keyval={keyval:#x} code={keycode} state={state:#x} 按下={press} -> 消费={}",
+                "ic{} 按键 keyval={keyval:#x} code={keycode} state={state:#x} 松开={release} -> 消费={}",
                 self.id, out.consumed
             ));
         }
@@ -555,8 +590,8 @@ impl InputContext {
     }
 
     /// Shift 单击切换中英：按下时已记 shift_pending，这里判断松开
-    fn global_chinese_changed_to_shift_release(&self, keyval: u32, press: bool) -> bool {
-        if press || (keyval != KS_SHIFT_L && keyval != KS_SHIFT_R) {
+    fn shift_released(&self, keyval: u32, release: bool) -> bool {
+        if !release || (keyval != KS_SHIFT_L && keyval != KS_SHIFT_R) {
             return false;
         }
         match self.inner.lock() {
@@ -581,13 +616,19 @@ impl InputContext {
         } else {
             vec![(snap.preedit.clone(), 1)] // 1 = Underline
         };
-        let cursor = snap.preedit.chars().count() as i32;
+        // 与 fcitx5 对齐：没有组字串时 cursorpos 给 -1，hint 给 0
+        let cursor = if snap.preedit.is_empty() {
+            -1
+        } else {
+            snap.preedit.chars().count() as i32
+        };
         let cands: Vec<(String, String)> = snap
             .cands
             .iter()
             .take(9)
             .map(|c| (c.clone(), String::new()))
             .collect();
+        let hint = if cands.is_empty() { 0 } else { LAYOUT_HORIZONTAL };
         let _ = Self::update_client_side_ui(
             emitter,
             preedit,
@@ -596,7 +637,7 @@ impl InputContext {
             Vec::new(),
             cands,
             snap.sel as i32,
-            LAYOUT_HORIZONTAL,
+            hint,
             false,
             false,
         )
@@ -662,6 +703,134 @@ impl InputMethod {
 }
 
 // ---------------------------------------------------------------------------
+// Controller1：状态栏 / 外部工具读输入法状态
+// ---------------------------------------------------------------------------
+//
+// 真 fcitx5 在 /controller 上开了 org.fcitx.Fcitx.Controller1。omarchy 的状态栏
+// （indicator.py）每 500ms 读一次 CurrentInputMethodGroup，读不到就整个输入法
+// 指示器失效；某些应用也靠它判断「现在是不是中文」。xime 之前完全没有这个
+// 对象，DBus 上一片 Unknown object，这就是「别的应用输入法像是坏了」的一部分。
+
+/// fcitx5 的输入法条目结构：a(ssssssb)
+type ImEntry = (
+    String, // 唯一名
+    String, // 显示名
+    String, // 图标
+    String, // 文字图标
+    String, // 标签（状态栏直接显示这个）
+    String, // 语言
+    bool,   // 是否可配置
+);
+
+const GROUP: &str = "Default";
+
+fn entry_zh() -> ImEntry {
+    (
+        IM_ZH.to_string(),
+        "拼音".to_string(),
+        String::new(),
+        String::new(),
+        "中".to_string(),
+        "zh_CN".to_string(),
+        false,
+    )
+}
+
+fn entry_en() -> ImEntry {
+    (
+        IM_EN.to_string(),
+        "English".to_string(),
+        String::new(),
+        String::new(),
+        "英".to_string(),
+        "en_US".to_string(),
+        false,
+    )
+}
+
+struct Controller {
+    global: Arc<Global>,
+}
+
+#[interface(name = "org.fcitx.Fcitx.Controller1")]
+impl Controller {
+    fn current_input_method(&self) -> String {
+        self.global.im_name().to_string()
+    }
+
+    fn current_input_method_group(&self) -> String {
+        GROUP.to_string()
+    }
+
+    /// 这里是 **6 个独立出参**（不是单个结构体）：omarchy 的状态栏直接按
+    /// `info[4]` 取标签、`info[5]` 取语言，多包一层会 IndexError 把指示器打挂。
+    fn current_input_method_info(&self) -> (String, String, String, String, String, String) {
+        let e = if self.global.chinese() {
+            entry_zh()
+        } else {
+            entry_en()
+        };
+        (e.0, e.1, e.2, e.3, e.4, e.5)
+    }
+
+    fn available_input_methods(&self) -> Vec<ImEntry> {
+        vec![entry_en(), entry_zh()]
+    }
+
+    fn input_method_groups(&self) -> Vec<String> {
+        vec![GROUP.to_string()]
+    }
+
+    fn input_method_group_info(&self, _group: &str) -> (String, Vec<ImEntry>) {
+        (String::new(), vec![entry_en(), entry_zh()])
+    }
+
+    #[zbus(name = "SetCurrentIM")]
+    fn set_current_im(&self, im: &str) -> bool {
+        self.global.set_im(im)
+    }
+
+    fn set_current_input_method_group(&self, _group: &str) -> bool {
+        true
+    }
+
+    fn activate(&self) {
+        self.global.set_im(IM_ZH);
+    }
+
+    fn deactivate(&self) {
+        self.global.set_im(IM_EN);
+    }
+
+    fn toggle(&self) {
+        self.global.toggle();
+    }
+
+    fn refresh(&self) {}
+
+    fn reload_config(&self) {}
+
+    fn configure(&self) {}
+
+    async fn restart(&self) {}
+
+    async fn exit(&self) {}
+
+    #[zbus(name = "CurrentUI")]
+    fn current_ui(&self) -> String {
+        "xime".to_string()
+    }
+
+    fn can_restart(&self) -> bool {
+        false
+    }
+
+    fn check_update(&self) -> bool {
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 入口
 // ---------------------------------------------------------------------------
 
@@ -676,6 +845,9 @@ pub fn run(variant: Variant, verbose: bool) -> Result<(), String> {
         let conn = zbus::connection::Builder::session()
             .name(SERVICE_MAIN)
             .serve_at(IM_PATH, im)
+            .serve_at(CONTROLLER_PATH, Controller {
+                global: global.clone(),
+            })
             .build()
             .await
             .map_err(|e| format!("连上总线并申请 {SERVICE_MAIN} 失败（可能有 fcitx5 在跑）: {e}"))?;
