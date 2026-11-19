@@ -566,6 +566,100 @@ python3 tools/dbus-selftest.py -v    # 打印每步 UI 快照
 
 ---
 
+---
+
+## 十四、预编辑只画在候选窗里：补 `UpdateFormattedPreedit`（2026-11-19）
+
+用户反馈：切换中英之后，输入框里看不到自己打的字，光标停在行首，想删也删不掉。
+
+### 14.1 现象与复现
+
+用 `tools/gtk3-probe.py`（GtkEntry + im-fcitx5.so，与 Gedit / GNOME 系同一路径）
+配合 `tools/uinput-inject` 真实按键，修复前的表现是：
+
+| 步骤 | 输入框内 | 候选窗 | 用户感受 |
+|---|---|---|---|
+| 打 `nihao` | **空白** | 拼音 `nihao` + 候选 | 字打哪儿去了？ |
+| 按 Shift 切换 | **空白**，光标在 0 | 收起 | 光标跳到行首 |
+| 再打 `a` | **仍然空白** | `a` + 英文补全 | 输入的第一个字符删不掉 |
+
+关键点是：**拼音只出现在候选窗上方的 panel 里，输入框内一片空白**。
+`GtkEntry.get_text()` 也是空串——说明这不是渲染问题，客户端确实没收到
+"输入框内的预编辑"。
+
+### 14.2 根因：少发一条信号
+
+真 fcitx5 每推一次拼音，会**成对**发两条信号：
+
+```
+UpdateClientSideUI      ← 候选窗、辅助行、像素定位（preedit 参数留空）
+UpdateFormattedPreedit  ← 输入框内的下划线预编辑 a(si) + cursorpos
+```
+
+`UpdateClientSideUI` 只管「客户端自绘的候选面板」，输入框里的下划线拼音走的是
+`UpdateFormattedPreedit`。xime 只发了前者，于是：
+
+1. 拼音进了候选面板；输入框里什么也没有。
+2. 客户端内部仍认为「有 preedit」，光标被摆在 preedit 起点（行首）。
+3. 退格被输入法消费（返回 true）却看不到任何变化 → 表现为「删不掉」。
+4. 切换中英时组字被清空，但客户端不知道要撤掉 preedit → ghost 残留。
+
+抓包对照（真 fcitx5，组字 `nihao` 后按 Shift）：
+
+```
+CurrentIM  "键盘 - 英语（美国）" / keyboard-us / en
+UpdateClientSideUI   preedit=[] cursor=-1 auxUp=[("en",0)] cands=[]
+CommitString         "nihao"
+UpdateFormattedPreedit  text=[] cursorpos=0
+ForwardKey           Shift
+```
+
+### 14.3 两个细节
+
+**cursorpos 是「预编辑内部」的光标偏移，必须给实际长度。** 第一版照抄抓包写了
+`0`，结果光标停在拼音最前面（`n|ihao`），后续输入还会插到拼音中间。改成
+`preedit.chars().count()` 后光标落在末尾。
+
+**提交时序：`UI(空) → CommitString → FormattedPreedit(空)`。** 不能把「清
+preedit」提到 Commit 之前——那样 GTK 会先按旧 preedit 的长度定位光标，再插入
+文本，光标就落错位置。这也是「光标跳到行首」的另一个来源。
+
+因此 `push_ui` 被拆成两个可独立调用的方法：
+
+| 方法 | 发什么 | 用在哪 |
+|---|---|---|
+| `push_ui_client` | `UpdateClientSideUI` | 提交路径（先收候选窗） |
+| `push_formatted` | `UpdateFormattedPreedit` | 组字刷新、提交后清空 |
+| `push_ui` | 两条都发 | 普通组字、翻页 |
+
+### 14.4 顺带修掉：切换中英不再丢字
+
+真 fcitx5 在切换引擎时会把未上屏的拼音**原样提交**（`CommitString "nihao"`），
+而不是丢弃。xime 之前直接 `reset_all()`，用户按 Shift 就把刚敲的拼音弄丢了。
+现在按 fcitx5 的做法：取出残留组字串 → 清状态 → 发空 UI → 提交该串。
+
+### 14.5 验证
+
+同一套按键序列，修复前后截图对比（GTK3 探针）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 打 `nihao` | 输入框空白，拼音只在候选窗 | 输入框显示 `nihao`，光标在末尾 ✅ |
+| Shift 切换 | 输入框空白，光标在行首 | 输入框显示已提交的 `nihao`，光标在末尾 ✅ |
+| 打 `a` | 输入框空白 | 显示 `nihaoa`（`a` 为下划线预编辑）✅ |
+| 退格 | 无变化（删不掉） | 先清预编辑，再逐字删除 ✅ |
+
+回归：`cargo test` 51 项、`tools/dbus-selftest.py` 44 项全过；微信（fcitx5-qt）
+里拼音只显示一次，候选窗正常，与 fcitx5 一致。
+
+### 14.6 观测方法上的两个坑
+
+- **`GtkEntry.get_text()` 不含 preedit。** 只盯缓冲区会得出「一个字都没进去」的
+  错误结论，必须配合截图或 `UpdateFormattedPreedit` 报文一起看。
+- **`changed` 信号比光标位置更新更早。** 在 `changed` 回调里立刻读
+  `get_position()` 会读到 0，看起来像「光标跳到行首」，其实只是中间态。
+  探针现在会在 `GLib.idle_add` 里补采一次稳态，避免把正常时序当成 bug。
+
 ## 参考
 
 - `fcitx/fcitx5-qt` · `qt5/dbusaddons/interfaces/*.xml`、`qt5/dbusaddons/fcitxqtinputcontextproxy_p.h`、`qt5/platforminputcontext/qfcitxplatforminputcontext.cpp`
