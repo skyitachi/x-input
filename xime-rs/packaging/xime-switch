@@ -76,6 +76,10 @@ start_xime() {
         setsid -f "$XIME" >>"$LOG" 2>&1
         say "  xime 已启动（日志: $LOG）"
     fi
+    # 已知限制：微信内置了 fcitx5-qt 客户端，只认 org.fcitx.Fcitx5 的 DBus 通道；
+    # xime 目前只有 zwp_input_method_v2 前端，所以切过来后微信没有可用输入法。
+    # （DBus 前端已由 docs/fcitx5-dbus-frontend.md 验证可行，尚未实现）
+    say "  提示：微信（Linux Universal）在 xime 下没有输入法，需要中文请切回 fcitx5"
 }
 
 stop_xime() {

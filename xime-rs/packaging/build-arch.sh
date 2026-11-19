@@ -38,6 +38,7 @@ install -m 755 packaging/xime-setup "$STAGE/usr/bin/xime-setup"
 install -m 755 packaging/xime-switch "$STAGE/usr/bin/xime-switch"
 install -m 644 README.md "$STAGE/usr/share/doc/xime/README.md"
 install -m 644 packaging/copyright "$STAGE/usr/share/doc/xime/copyright"
+install -m 644 packaging/config.ini.example "$STAGE/usr/share/doc/xime/config.ini.example"
 # KDE「系统设置 → 键盘 → 虚拟键盘」靠这个条目发现 xime
 install -m 644 packaging/xime.desktop "$STAGE/usr/share/applications/xime.desktop"
 # fcitx5 式的开机自启（NotShowIn 挡掉了 KDE/GNOME；xime 内置单实例锁，重复拉起无害）
