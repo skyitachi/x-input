@@ -7,9 +7,11 @@ Phase 0 假 fcitx5 守护进程 —— 只验证一件事：
 不做组字、不做候选、不做词库。收到按键 -> 直接发一个固定字符串。
 
 用法:
-    python3 fake_fcitx5.py [commit|passthrough] [要上屏的文字]
+    python3 fake_fcitx5.py [commit|candidate|passthrough] [要上屏的文字]
 
     commit       收到按键 -> emit CommitString(文字) 并返回 True（吞掉按键）
+    candidate    收到 a-z -> 攒组字串并推 UpdateClientSideUI（含 5 条候选）；
+                 空格/回车 -> 提交首候选。用于验证「候选窗是否由应用自绘」
     passthrough  收到按键 -> 返回 False（按键原样交给应用），用于对照
 """
 import os
@@ -71,6 +73,7 @@ class InputContext(dbus.service.Object):
         self.args = dict(args)
         self.focused = False
         self.key_count = 0
+        self.buf = ""
         log(f"创建输入上下文 {path}  program={self.args.get('program')!r} "
             f"从 {sender}")
         # 客户端声明自己要画候选窗时，说明它会消费 UpdateClientSideUI
@@ -132,10 +135,55 @@ class InputContext(dbus.service.Object):
                 f"press={bool(ktype)} focused={self.focused}")
         if MODE == "passthrough":
             return False
+        if MODE == "candidate":
+            return self._imitate_composition(keyval, ktype)
         # 实验：吞掉按键，并把固定文本送给客户端
         self.CommitString(TEXT)
         log(f"  -> CommitString({TEXT!r})")
         return True
+
+    # ---- candidate 模式：模拟一次真实的组字，看微信会不会自己画候选窗 ----
+    def _imitate_composition(self, keyval, ktype):
+        kv = int(keyval)
+        press = bool(ktype)
+        # Step 1：字母 -> 攒进 preedit，并把候选表推给客户端
+        if 0x61 <= kv <= 0x7A:  # a-z
+            if not press:
+                # 松开事件：按下已被消费，这里同样吞掉，但不能重复累积字符
+                return True
+            self.buf += chr(kv)
+            self._push_ui()
+            log(f"  -> UpdateClientSideUI preedit={self.buf!r} 候选 5 条")
+            return True
+        # Step 2：空格 / 回车 -> 提交首个候选
+        if kv in (0x20, 0xFF0D):
+            if not press:
+                return True
+            if self.buf:
+                self.CommitString("你")
+                log(f"  -> CommitString('你')（选首候选，丢弃 {self.buf!r}）")
+                self.buf = ""
+                self._push_ui()
+            return True
+        # Step 3：BackSpace -> 退格
+        if kv == 0xFF08:
+            if not press:
+                return True
+            if self.buf:
+                self.buf = self.buf[:-1]
+                self._push_ui()
+            return True
+        return False
+
+    def _push_ui(self):
+        # a(si) 的 i 是 TextFormatFlags：1 = Underline（组字串习惯加下划线）
+        preedit = [(self.buf, 1)] if self.buf else []
+        cands = [("你", ""), ("尼", ""), ("泥", ""), ("拟", ""), ("逆", "")]
+        if not self.buf:
+            cands = []
+        # i = CandidateLayoutHint: 0=NotSet 1=Vertical 2=Horizontal
+        self.UpdateClientSideUI(preedit, len(self.buf), [], [], cands,
+                                0, 2, False, True)
 
     # ---- 翻页/选词/动作 ----
     @dbus.service.method(IF_IC, in_signature="", out_signature="")

@@ -262,6 +262,38 @@ void QFcitxPlatformInputContext::commitString(const QString &str) {
 - `gdbus call` 会把整数推断成 int32，与 `u` 签名不匹配而报 `UnknownMethod`；验证签名要用 Python 客户端。
 - 停 fcitx5 后系统即无输入法（服务名独占的必然结果），实验期间需接受这个空窗。
 
+### Phase 0.5：候选窗确实由客户端自绘（2026-11-19）
+
+同一个脚本的 `candidate` 模式：`a-z` 累积组字串、每次按键推一次
+`UpdateClientSideUI`、空格提交首候选。截图见
+`tools/phase0-candidate-window.png`。
+
+| 观察 | 结果 |
+|---|---|
+| 候选窗出现位置 | 输入框右下角，跟随光标 |
+| 渲染内容 | 一行组字串 + 5 条候选横排，首候选蓝色高亮 |
+| 用到的数据结构 | `UpdateClientSideUI(a(si) i, a(si), a(si), a(ss), i, i, b, b)` 原样可用 |
+| 上屏 | 空格 → `CommitString("你")`，输入框直接出现「你」 |
+
+**结论：DBus 前端不需要一行窗口代码。** 这与 Wayland 前端形成鲜明对比——那边要
+自己维护 surface、算光标、处理缩放，还踩过微信给出 `(0,-16) 0×16` 无效矩形的坑。
+在 DBus 这条路上，坐标系、缩放、主题、字体全部由应用负责。
+
+**额外发现**
+
+- `quickshell`（Omarchy 的状态栏/启动器外壳）也主动 `CreateInputContext` 并 FocusIn。
+  说明这个前端的受益者不止微信，还有 shell 自身那些带输入框的组件。
+- 客户端在输入上下文重建之后**不会自动补发 `FocusIn`**。守护进程中途重启（哪怕
+  微信立刻重连、`SetCapability` 也正常）时，按键不会转发，必须让输入框重新获得焦点
+  才恢复。实现时要么接受这个前提，要么在 `CreateInputContext` 返回后主动引导客户端聚焦。
+
+**新增的坑**
+
+- `ProcessKeyEvent` 的按下与松开都会到达。只有 `type=true`（按下）可以累积字符，
+  否则组字串会出现 `ppppnnii` 这样的重复。松开事件按「已消费」处理即可。
+- 不要无条件返回 `true`：那会把应用的快捷键（Ctrl+C 之类）一并吞掉。真实实现要
+  按 fcitx5 的规则放行——通常只在有组字或有按键映射时才吞。
+
 ---
 
 ## 七、最小可行子集（MVP）
@@ -345,10 +377,17 @@ DBus 前端的 `on_key` 把 `(keyval, keycode, state)` 还原成 xime 的 `KeyEv
 
 ## 十一、结论
 
-- **方向成立**：fcitx 在微信里能用，靠的是应用进程内的 DBus 客户端，而微信这批客户端是原封不动编进去的 fcitx5-qt。守护端这一侧是可以被替换的。
-- **收益超出「微信」**：同一套前端同时解决 GNOME、X11、XWayland、Electron 四类场景，把 xime 从「Hyprland 的输入法」变成「跨桌面的输入法」。
-- **唯一的前置条件**是 Phase 0 那个 100 行实验。它便宜、确定、失败也能立刻止损。
-- 若不打算长期维护第二个前端，**维持 fcitx5 是理性的选择**；xime 保留 Wayland 前端，作为 Hyprland/KDE 下的轻量替代。
+- **方向成立，且已实测**：Phase 0 证明了上屏可用（`SetSurroundingText` 回显出我们发的字符串），
+  Phase 0.5 证明了候选窗由客户端自绘（`UpdateClientSideUI` 一推，微信就画出了 5 条候选）。
+  剩下的是工程量问题，不是可行性问题。
+- **收益超出「微信」**：同一套前端同时解决 GNOME、X11、XWayland、Electron 四类场景，把 xime
+  从「Hyprland 的输入法」变成「跨桌面的输入法」。实测中 `quickshell` 也自动连了上来，说明
+  覆盖面还包括 shell 自己的搜索框、启动器。
+- **成本比预想低**：候选窗、主题、字体、光标定位全归应用管，xime 只发结构化数据。
+  这与 Wayland 前端最费劲的那一半正好互补。
+- **真正的代价是双前端维护**：两套前端共用引擎，但生命周期、焦点语义、按键吞放规则都不一样。
+  若不打算长期维护第二个前端，**维持 fcitx5 仍是理性选择**；xime 保留 Wayland 前端，作为
+  Hyprland/KDE 下的轻量替代。
 
 ---
 

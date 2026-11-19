@@ -1,0 +1,252 @@
+[08:30:37] 已连接会话总线: :1.586
+[08:30:37] 已占用服务名 org.fcitx.Fcitx5
+[08:30:37] 已占用服务名 org.fcitx.Fcitx-0
+[08:30:37] 模式=candidate 上屏文本='XIME接管成功'；等待客户端连接…
+[08:30:37] == CreateInputContext -> /org/freedesktop/portal/inputcontext/1（来自 :1.500，入参 [('program', 'wechat'), ('display', 'wayland:'), ('clientControlVirtualkeyboardShow', 'true'), ('clientControlVirtualkeyboardHide', 'false')]）
+[08:30:37] 创建输入上下文 /org/freedesktop/portal/inputcontext/1  program=dbus.String('wechat') 从 :1.500
+[08:30:37]    args={dbus.String('program'): dbus.String('wechat'), dbus.String('display'): dbus.String('wayland:'), dbus.String('clientControlVirtualkeyboardShow'): dbus.String('true'), dbus.String('clientControlVirtualkeyboardHide'): dbus.String('false')}
+[08:30:37] SetSupportedCapability 0x1ffffffffff
+[08:30:37] SetCapability 0x1e801800072
+[08:30:37] SetSurroundingText 'XIME接管成功XIME接管成功你==' cursor=19
+[08:32:51] == CreateInputContext -> /org/freedesktop/portal/inputcontext/2（来自 :1.174，入参 [('program', 'quickshell'), ('display', 'wayland:'), ('clientControlVirtualkeyboardShow', 'true'), ('clientControlVirtualkeyboardHide', 'false')]）
+[08:32:51] 创建输入上下文 /org/freedesktop/portal/inputcontext/2  program=dbus.String('quickshell') 从 :1.174
+[08:32:51]    args={dbus.String('program'): dbus.String('quickshell'), dbus.String('display'): dbus.String('wayland:'), dbus.String('clientControlVirtualkeyboardShow'): dbus.String('true'), dbus.String('clientControlVirtualkeyboardHide'): dbus.String('false')}
+[08:32:51] SetCursorRect 1118,373 1x27
+[08:32:51] FocusIn
+[08:32:51] SetSupportedCapability 0x1ffffffffff
+[08:32:51] SetCapability 0xe001800032
+[08:32:51] FocusIn
+[08:32:51] ProcessKeyEvent #1 keyval=0xffeb keycode=133 state=0x50 press=True focused=True
+[08:32:53] FocusIn
+[08:32:53] ProcessKeyEvent #2 keyval=0x77 keycode=25 state=0x10 press=False focused=True
+[08:32:53] FocusIn
+[08:32:53] ProcessKeyEvent #3 keyval=0x65 keycode=26 state=0x10 press=False focused=True
+[08:32:53] FocusIn
+[08:32:53] ProcessKeyEvent #4 keyval=0x77 keycode=25 state=0x10 press=True focused=True
+[08:32:53]   -> UpdateClientSideUI 候选 5 条
+[08:32:53]   -> UpdateClientSideUI preedit='w' 候选 5 条
+[08:32:53] FocusIn
+[08:32:53] ProcessKeyEvent #5 keyval=0x65 keycode=26 state=0x10 press=True focused=True
+[08:32:53]   -> UpdateClientSideUI 候选 5 条
+[08:32:53]   -> UpdateClientSideUI preedit='we' 候选 5 条
+[08:32:54] FocusIn
+[08:32:54] ProcessKeyEvent #6 keyval=0xffe1 keycode=50 state=0x10 press=False focused=True
+[08:32:54] FocusIn
+[08:32:54] ProcessKeyEvent #7 keyval=0xffe1 keycode=50 state=0x11 press=True focused=True
+[08:32:54] FocusIn
+[08:32:54] ProcessKeyEvent #8 keyval=0x20 keycode=65 state=0x10 press=False focused=True
+[08:32:54] FocusIn
+[08:32:54] ProcessKeyEvent #9 keyval=0x20 keycode=65 state=0x10 press=True focused=True
+[08:32:54]   -> CommitString('你')（选首候选，丢弃 'we'）
+[08:32:54]   -> UpdateClientSideUI 候选 0 条
+[08:32:54] SetCursorRectV2 1138,373 1x30 @1.0
+[08:32:54] SetCapability 0xe001800072
+[08:32:54] SetSurroundingText '你' cursor=1
+[08:32:54] SetCapability 0xe001800032
+[08:32:55] FocusIn
+[08:32:55] ProcessKeyEvent #10 keyval=0xff08 keycode=22 state=0x10 press=False focused=True
+[08:32:55] SetCursorRectV2 1138,372 1x30 @1.0
+[08:32:56] FocusIn
+[08:32:56] ProcessKeyEvent #11 keyval=0xff08 keycode=22 state=0x10 press=True focused=True
+[08:32:56] FocusIn
+[08:32:56] ProcessKeyEvent #12 keyval=0xff08 keycode=22 state=0x10 press=False focused=True
+[08:32:56] FocusIn
+[08:32:56] FocusIn
+[08:32:56] FocusIn
+[08:32:58] FocusIn
+[08:32:58] SetCursorRectV2 1118,372 1x27 @1.0
+[08:32:58] SetCapability 0xe001800072
+[08:32:58] SetCapability 0xe001800032
+[08:32:58] FocusIn
+[08:32:58] SetCursorRectV2 1118,373 1x27 @1.0
+[08:32:59] FocusIn
+[08:32:59] FocusIn
+[08:32:59] FocusIn
+[08:32:59] ProcessKeyEvent #20 keyval=0x77 keycode=25 state=0x10 press=True focused=True
+[08:32:59]   -> UpdateClientSideUI 候选 5 条
+[08:32:59]   -> UpdateClientSideUI preedit='w' 候选 5 条
+[08:32:59] FocusIn
+[08:32:59]   -> UpdateClientSideUI 候选 5 条
+[08:32:59]   -> UpdateClientSideUI preedit='we' 候选 5 条
+[08:33:01] FocusIn
+[08:33:01] FocusIn
+[08:33:01]   -> UpdateClientSideUI 候选 5 条
+[08:33:01]   -> UpdateClientSideUI preedit='wec' 候选 5 条
+[08:33:01] FocusIn
+[08:33:01] FocusIn
+[08:33:01]   -> UpdateClientSideUI 候选 5 条
+[08:33:01]   -> UpdateClientSideUI preedit='wech' 候选 5 条
+[08:33:01] FocusIn
+[08:33:01] FocusIn
+[08:33:01] FocusIn
+[08:33:01]   -> UpdateClientSideUI 候选 5 条
+[08:33:01]   -> UpdateClientSideUI preedit='wecha' 候选 5 条
+[08:33:01] FocusIn
+[08:33:01]   -> UpdateClientSideUI 候选 5 条
+[08:33:01]   -> UpdateClientSideUI preedit='wechat' 候选 5 条
+[08:33:03] FocusIn
+[08:33:03] FocusIn
+[08:33:03]   -> CommitString('你')（选首候选，丢弃 'wechat'）
+[08:33:03]   -> UpdateClientSideUI 候选 0 条
+[08:33:03] SetCursorRectV2 1138,373 1x30 @1.0
+[08:33:03] SetCapability 0xe001800072
+[08:33:03] SetSurroundingText '你' cursor=1
+[08:33:03] SetCapability 0xe001800032
+[08:33:04] FocusIn
+[08:33:04] SetCursorRectV2 1138,372 1x30 @1.0
+[08:33:04] FocusIn
+[08:33:04] FocusIn
+[08:33:04] FocusIn
+[08:33:04] FocusIn
+[08:33:04] FocusIn
+[08:33:04] FocusIn
+[08:33:04] FocusIn
+[08:33:04] FocusIn
+[08:33:04] ProcessKeyEvent #40 keyval=0xff08 keycode=22 state=0x10 press=False focused=True
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05] FocusIn
+[08:33:05]   -> UpdateClientSideUI 候选 5 条
+[08:33:05]   -> UpdateClientSideUI preedit='a' 候选 5 条
+[08:33:05] FocusIn
+[08:33:05]   -> UpdateClientSideUI 候选 5 条
+[08:33:05]   -> UpdateClientSideUI preedit='as' 候选 5 条
+[08:33:05] FocusIn
+[08:33:05]   -> UpdateClientSideUI 候选 5 条
+[08:33:05] FocusIn
+[08:33:05]   -> UpdateClientSideUI 候选 5 条
+[08:33:05]   -> UpdateClientSideUI preedit='ad' 候选 5 条
+[08:33:06] FocusIn
+[08:33:06]   -> UpdateClientSideUI 候选 5 条
+[08:33:06]   -> UpdateClientSideUI preedit='adf' 候选 5 条
+[08:33:06] FocusIn
+[08:33:06] FocusIn
+[08:33:06]   -> UpdateClientSideUI 候选 5 条
+[08:33:06] FocusIn
+[08:33:06] FocusIn
+[08:33:06]   -> UpdateClientSideUI 候选 5 条
+[08:33:06] FocusIn
+[08:33:06] ProcessKeyEvent #60 keyval=0xff08 keycode=22 state=0x10 press=False focused=True
+[08:33:06] FocusIn
+[08:33:06]   -> UpdateClientSideUI 候选 0 条
+[08:33:06] FocusIn
+[08:33:07] FocusIn
+[08:33:07] FocusIn
+[08:33:07] FocusIn
+[08:33:07] FocusIn
+[08:33:07] FocusIn
+[08:33:08] FocusIn
+[08:33:08] FocusIn
+[08:33:08] FocusIn
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 5 条
+[08:33:08]   -> UpdateClientSideUI preedit='a' 候选 5 条
+[08:33:08] FocusIn
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 5 条
+[08:33:08]   -> UpdateClientSideUI preedit='as' 候选 5 条
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 5 条
+[08:33:08]   -> UpdateClientSideUI preedit='asd' 候选 5 条
+[08:33:08] FocusIn
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 5 条
+[08:33:08]   -> UpdateClientSideUI preedit='asdf' 候选 5 条
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 5 条
+[08:33:08] FocusIn
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 5 条
+[08:33:08] FocusIn
+[08:33:08] ProcessKeyEvent #80 keyval=0xff08 keycode=22 state=0x10 press=False focused=True
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 5 条
+[08:33:08] FocusIn
+[08:33:08] FocusIn
+[08:33:08]   -> UpdateClientSideUI 候选 0 条
+[08:33:09] FocusIn
+[08:33:09] FocusIn
+[08:33:09] FocusIn
+[08:33:09]   -> UpdateClientSideUI 候选 5 条
+[08:33:09]   -> UpdateClientSideUI preedit='w' 候选 5 条
+[08:33:09] FocusIn
+[08:33:09]   -> UpdateClientSideUI 候选 5 条
+[08:33:09]   -> UpdateClientSideUI preedit='we' 候选 5 条
+[08:33:10] FocusIn
+[08:33:10] FocusIn
+[08:33:10]   -> UpdateClientSideUI 候选 5 条
+[08:33:10]   -> UpdateClientSideUI preedit='wec' 候选 5 条
+[08:33:10] FocusIn
+[08:33:10] FocusIn
+[08:33:10]   -> UpdateClientSideUI 候选 5 条
+[08:33:10]   -> UpdateClientSideUI preedit='wech' 候选 5 条
+[08:33:10] FocusIn
+[08:33:10] FocusIn
+[08:33:10] FocusIn
+[08:33:10]   -> UpdateClientSideUI 候选 5 条
+[08:33:10]   -> UpdateClientSideUI preedit='wecha' 候选 5 条
+[08:33:10] FocusIn
+[08:33:10]   -> UpdateClientSideUI 候选 5 条
+[08:33:10]   -> UpdateClientSideUI preedit='wechat' 候选 5 条
+[08:33:11] FocusIn
+[08:33:11] FocusIn
+[08:33:11]   -> CommitString('你')（选首候选，丢弃 'wechat'）
+[08:33:11]   -> UpdateClientSideUI 候选 0 条
+[08:33:11] SetCursorRectV2 1158,372 1x30 @1.0
+[08:33:11] SetCapability 0xe001800072
+[08:33:11] SetSurroundingText '你你' cursor=2
+[08:33:11] SetCapability 0xe001800032
+[08:33:11] FocusIn
+[08:33:11] FocusIn
+[08:33:11] FocusIn
+[08:33:11] ProcessKeyEvent #100 keyval=0xff0d keycode=36 state=0x10 press=False focused=True
+[08:33:11] FocusIn
+[08:33:14] SetCapability 0xe001800072
+[08:33:14] SetSurroundingText '你你' cursor=2
+[08:33:15] SetCapability 0xe001800032
+[08:33:15] FocusIn
+[08:33:15] FocusIn
+[08:33:16] FocusIn
+[08:33:16] FocusIn
+[08:33:16] FocusIn
+[08:33:16] FocusIn
+[08:33:16] FocusIn
+[08:33:16] FocusIn
+[08:33:16] FocusIn
+[08:33:16] SetCursorRectV2 1118,372 1x27 @1.0
+[08:33:16] SetCapability 0xe001800072
+[08:33:16] SetCapability 0xe001800032
+[08:33:16] FocusIn
+[08:33:16] SetCursorRectV2 1118,373 1x27 @1.0
+[08:33:19] Reset
+[08:33:19] FocusOut
+[08:33:19] FocusIn
+[08:33:19] SetCapability 0x1e001800032
+[08:33:19] DestroyIC
+[08:33:20] == CreateInputContext -> /org/freedesktop/portal/inputcontext/3（来自 :1.174，入参 [('program', 'quickshell'), ('display', 'wayland:'), ('clientControlVirtualkeyboardShow', 'true'), ('clientControlVirtualkeyboardHide', 'false')]）
+[08:33:20] 创建输入上下文 /org/freedesktop/portal/inputcontext/3  program=dbus.String('quickshell') 从 :1.174
+[08:33:20]    args={dbus.String('program'): dbus.String('quickshell'), dbus.String('display'): dbus.String('wayland:'), dbus.String('clientControlVirtualkeyboardShow'): dbus.String('true'), dbus.String('clientControlVirtualkeyboardHide'): dbus.String('false')}
+[08:33:20] FocusIn
+[08:33:20] SetSupportedCapability 0x1ffffffffff
+[08:33:20] SetCapability 0x1e001800032
+[08:33:31] Reset
+[08:33:31] FocusOut
+[08:33:31] FocusIn
+[08:33:31] DestroyIC
+[08:33:45] == CreateInputContext -> /org/freedesktop/portal/inputcontext/4（来自 :1.174，入参 [('program', 'quickshell'), ('display', 'wayland:'), ('clientControlVirtualkeyboardShow', 'true'), ('clientControlVirtualkeyboardHide', 'false')]）
+[08:33:45] 创建输入上下文 /org/freedesktop/portal/inputcontext/4  program=dbus.String('quickshell') 从 :1.174
+[08:33:45]    args={dbus.String('program'): dbus.String('quickshell'), dbus.String('display'): dbus.String('wayland:'), dbus.String('clientControlVirtualkeyboardShow'): dbus.String('true'), dbus.String('clientControlVirtualkeyboardHide'): dbus.String('false')}
+[08:33:45] SetCursorRect 1118,373 1x27
+[08:33:45] FocusIn
+[08:33:45] SetSupportedCapability 0x1ffffffffff
+[08:33:45] SetCapability 0xe001800032
+[08:33:45] FocusIn
+[08:33:45] ProcessKeyEvent #1 keyval=0xffeb keycode=133 state=0x50 press=True focused=True
