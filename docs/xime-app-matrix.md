@@ -13,11 +13,23 @@
 | 应用 | 实际形态 | Hyprland（v2 前端） | 当前 KDE（v1 前端） |
 |---|---|---|---|
 | **Chrome** | Chromium 158，Wayland 原生 | ✅ 可用（Chromium 自己实现 text-input-v3，不依赖 GTK 模块）**[推断]** | ✅ 可用 **[实测]**，连环境变量都不用清 |
-| **Konsole** | Qt6 25.12，Wayland 原生 | ✅ 可用（需清 `QT_IM_MODULE`） | ✅ 可用 **[实测]**，前提是清 `QT_IM_MODULE` |
-| **WorkBuddy** | Electron 37 / Chromium 138，**跑在 XWayland** | ❌ 默认不可用，需加 `--ozone-platform-hint=auto` | ❌ 当前 XWayland **[实测]**，同上 |
+| **Konsole** | Qt6 25.12，Wayland 原生 | ✅ 可用（需清 `QT_IM_MODULE`） | ✅ 可用 **[实测]**，前提是清 `QT_IM_MODULE`（会话级，需重登生效） |
+| **WorkBuddy** | Electron 37 / Chromium 138，**跑在 XWayland** | ❌ 默认不可用，需加 ozone/IME 参数 | ⚠️ 启动器已加参数 **[已改，待重启验证]**；改前为 XWayland **[实测]** |
 | **微信** | 4.1.13.26，Wayland 原生，实际走 **text-input-v2** | ⚠️ 推断可用（Hyprland 是否通告 v2 待确认） | ✅ **实测通过**：候选窗弹出、空格上屏「你好」；前提是清掉 IM 变量 |
 
-一句话：**Chrome / Konsole / 微信三个已实测可用，只剩 WorkBuddy 差一个启动参数。** 微信这一格从「硬墙」到「可用」的关键不在合成器，在**启动时的环境变量**——它有两套输入通道，环境变量决定用哪套。
+一句话：**Chrome / Konsole / 微信三个已实测可用；WorkBuddy 已经改好启动参数但必须重启应用才生效。** 三者背后是同一个原因：能不能连上 text-input 通道，取决于**该应用启动那一刻的环境变量与图形后端**，不是合成器本身。
+
+### 1.1.1 「为什么只有 Chrome 能用」（2026-11-20 实测定论）
+
+用户的实际现象是 Chrome 正常、WorkBuddy 与 Konsole 打不出中文。三者并排看，差别正好落在两道闸门上：
+
+| 应用 | 图形后端 | 启动时的 IM 变量 | 结果 | 卡在哪 |
+|---|---|---|---|---|
+| Chrome 158 | Wayland 原生 | 有 `GTK_IM_MODULE=fcitx` | ✅ | 都不卡：Chromium 140+ 的 v3 默认开，且它**不读** `GTK_IM_MODULE` |
+| Konsole 25.12 | Wayland 原生 | 有 `QT_IM_MODULE=fcitx` | ❌ | 卡第 2 道闸：Qt 走 fcitx 模块，不建 text-input |
+| WorkBuddy（Chromium 138） | **XWayland** | 有 `GTK_IM_MODULE=fcitx` | ❌ | 卡第 1 道闸：X11 窗口没有 `wl_surface`；外加 138 的 v3 未默认开 |
+
+所以「只有 Chrome 能用」不是 xime 挑应用，而是**只有 Chrome 同时越过了这两道闸**。
 
 ### 1.2 「是否都已可以使用」
 
@@ -44,6 +56,10 @@
 
 **所以「现在能不能用」的答案是：四个应用现在都用不上 xime——不是 xime 在这些应用里失败，而是 xime 压根没上线。** 下面所有判定都是「把 xime 接上去之后」的判定；微信那一格已经真接上去跑通，验证完已切回 fcitx5。
 
+> **20:45 已动手修掉两道闸**（详见 1.1.1 / 4.2 / 4.3）：
+> `99-fcitx5-im.conf` 里 `QT_IM_MODULE` / `GTK_IM_MODULE` 已注释（保留 `XMODIFIERS`，X11 应用的 XIM 兜底不受影响），`workbuddy.sh` 已加 ozone + IME 参数并在启动器内 `unset` 这两个变量。
+> 两份改动都**需要重启对应进程**才生效：Konsole 要重登（会话级变量），WorkBuddy 重开应用即可（启动器自己兜了 unset）。
+
 ---
 
 ## 二、判定模型：三层闸门，缺一层就废
@@ -66,7 +82,7 @@
 两个容易误判的地方，本次都实测到了：
 
 - **应用是 Wayland 原生，也可能不建 text-input。** 同一个 Konsole，去掉 `QT_IM_MODULE` 后 `activeClientSupportsTextInput=true`，带上就是 `false` **[实测]**。所以「Konsole 支不支持」和「你的会话配没配好」是两个问题。
-- **Chromium 系不认 `GTK_IM_MODULE` 这条路。** Chrome 158 在 `GTK_IM_MODULE=fcitx` 下**仍然**建了 text-input-v3（`activeClientSupportsTextInput=true`）**[实测]**。这是它和 Qt 应用最大的行为差异（M136 起 WaylandTextInputV3 默认开启 **[源码]**）。
+- **Chromium 系不认 `GTK_IM_MODULE` 这条路。** Chrome 158 在 `GTK_IM_MODULE=fcitx` 下**仍然**建了 text-input-v3（`activeClientSupportsTextInput=true`）**[实测]**。这是它和 Qt 应用最大的行为差异（WaylandTextInputV3 自 Chromium 140 起默认开启 **[源码]**；140 之前要用 `--wayland-text-input-version=3` 显式指定）。
 - **同一个应用可能同时有两条 IC，选哪条由环境变量决定。** 微信默认走 `frontend:dbus`（focus:1），`frontend:wayland` 建了却 focus:0；把 IM 变量清掉重启，它才切到 wayland 那条并 `enable()` **[实测]**。所以「看到应用 bind 了 text-input 管理器」不等于「它在用」。
 
 KDE 侧还有一层桥接值得知道：KWin 6.6 客户端说 v3、输入法说 v1，中间由 KWin 转换（KDE bug 517620 里能看到 Discord 的 v3 `surrounding_text` 被 KWin 转成 `input_method_context_v1` 事件）**[源码]**。这解释了为什么 v1 前端能覆盖原生 Chromium。
@@ -88,6 +104,8 @@ KDE 侧还有一层桥接值得知道：KWin 6.6 客户端说 v3、输入法说 
 | 7 | 微信（默认环境，含 IM 变量） | `fcitx5-diagnose` | 双 IC：`frontend:dbus focus:1` + `frontend:wayland focus:0` → 默认走 DBus，text-input 不启用 |
 | 8 | 微信（`env -u` 清 IM 变量） | `WAYLAND_DEBUG` 抓协议 | `get_text_input` 出现；`zwp_text_input_v2#19.enable(wl_surface#39)`；`activeClientSupportsTextInput=true` |
 | 9 | 微信 + xime（`xime-switch xime`） | Ctrl+F → 注入 `nihao` → 空格 | 候选窗 `1.你好 2.你号 3.呢好 …`；上屏后搜索框显示 **「你好」** ✅ |
+| 10 | Konsole + xime（20:47 复测） | 干净环境起 Konsole，`xime-switch xime` → 点终端 → 注入 `nihao` → 空格 | 终端内联 preedit `nihao` + 候选窗 `1.你好 2.你号 3.呢好 4.妙好 5.你灏 6.你豪`；空格后提示符行出现 **「你好」** ✅ |
+| 11 | WorkBuddy 启动器（20:45） | `strings workbuddy` 查能力 | `zwp_text_input_manager_v3`、`ozone-platform-hint`、`wayland-text-input-version`、`enable-wayland-ime` 均在二进制内 → 参数受支持 |
 
 第 7、8 条是这次的关键：**微信的输入通道由启动时的环境变量一次性决定**——有 IM 变量走 DBus，没有就走 text-input-v2。第 9 条是端到端闭环，证明 xime 在微信里确实能落字。
 
@@ -101,7 +119,7 @@ KDE 侧还有一层桥接值得知道：KWin 6.6 客户端说 v3、输入法说 
 
 | 项 | 内容 |
 |---|---|
-| 形态 | Wayland 原生（158 默认 wayland ozone），text-input-v3 默认启用（M136+） |
+| 形态 | Wayland 原生（158 默认 wayland ozone），text-input-v3 自 **Chromium 140** 起默认启用 |
 | KDE | ✅ 只要 KWin 拉起 xime 就能用；`GTK_IM_MODULE` **不影响**（实测） |
 | Hyprland | ✅ 同理，建议顺手清 `GTK_IM_MODULE` 以免走 GTK IME 回退 |
 | 风险 | Chromium 会发超长 `surrounding_text`（KDE bug 517620），xime 侧未做长度校验，KWin 转发时可能触发输入法侧异常；目前未观察到 |
@@ -119,14 +137,29 @@ xime 在 Chrome 里唯一的未验证项是「commit 能否真正落进网页输
 
 Konsole 是四个里最稳的：不涉及 Chromium 那套自定义 IME 实现，也没有登录态这类前置条件。
 
+**环境变量的坑在于「改了不生效」**：`~/.config/environment.d/99-fcitx5-im.conf` 里的
+`QT_IM_MODULE=fcitx` 是登录时由 systemd 导入、再被 Plasma 继承给所有子进程的。
+注释掉那两行之后，**必须重新登录一次**才会作用于面板/菜单拉起的 Konsole——
+已经开着的 Konsole 进程环境是启动那一刻的快照，重启应用也没用，得重登。
+（验证时可以绕开：`env -u QT_IM_MODULE -u GTK_IM_MODULE konsole`。）
+
 ### 4.3 WorkBuddy —— 差一个启动参数
 
 | 项 | 内容 |
 |---|---|
 | 形态 | Electron 37（Chromium 138），**当前 XWayland** |
-| KDE | ❌ 现状；改成 Wayland 后应可用（Chromium 138 的 v3 已默认开，只差 ozone 后端） |
+| KDE | ❌ 现状；改成 Wayland 后应可用 |
 | Hyprland | ❌ 现状；wlroots 系对 XWayland 根本没有协议覆盖，比 KDE 更绝 |
-| 修法 | `workbuddy.sh` 的 `exec` 加 `--ozone-platform-hint=auto`（Chromium 140 之前必须显式指定）；若 hint 不生效，退回硬指定 `--ozone-platform=wayland --enable-wayland-ime` |
+| 已改 | `workbuddy.sh` 的 `exec` 加 `--ozone-platform-hint=auto --enable-wayland-ime --wayland-text-input-version=3`，并在启动器里 `unset GTK_IM_MODULE QT_IM_MODULE` |
+
+**为什么必须带 `--wayland-text-input-version=3`**：Chromium 是 **140** 才把
+text-input-v3 设为默认的；本包内嵌 138（`strings workbuddy | grep Chrome/` →
+`Chrome/138.0.7204.251`），低于这条线，不显式指定就还停在 v1/v2 的老路上。
+140 之后这两条 IME 参数可以删掉，只留 ozone hint。
+
+`unset GTK_IM_MODULE QT_IM_MODULE` 写在启动器里而不是只改会话环境，是为了**免重登**：
+Electron 会检查这两个变量，非空时退回 GTK 输入法模块、绕开 text-input；
+而 `environment.d` 的改动要下次登录才进入 Plasma 的环境。
 
 改完的验证判据很干脆：`xlsclients -display $DISPLAY | grep -i workbuddy` **不再有输出**，且 `activeClientSupportsTextInput=true`。
 
