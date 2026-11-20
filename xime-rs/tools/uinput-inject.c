@@ -78,6 +78,11 @@ static int create_dev(const char *name, int is_pointer) {
         ioctl(fd, UI_SET_RELBIT, REL_Y);
     } else {
         ioctl(fd, UI_SET_EVBIT, EV_KEY);
+        // 必须把所有用得到的 keycode 都声明进 keybit：内核在 input_get_disposition()
+        // 里对 EV_KEY 先做 test_bit(code, dev->keybit)，没声明的键码会被静默丢掉
+        // （不报错、不进 libinput）。早先只按字符表声明，导致 Esc/方向键/Delete
+        // 这类键根本发不出去，看起来像「合成器没把按键送给输入法」。
+        for (int c = 1; c < 256; c++) ioctl(fd, UI_SET_KEYBIT, c);
         for (int c = 0; c < 256; c++) {
             int kc = keycode_of((char)c);
             if (kc >= 0) ioctl(fd, UI_SET_KEYBIT, kc);
@@ -121,7 +126,8 @@ int main(int argc, char **argv) {
             "  uinput-inject click [dx] [dy]\n"
             "  uinput-inject type <text>\n"
             "  uinput-inject combo <mods> <key>\n"
-            "  uinput-inject tap <key>\n");
+            "  uinput-inject tap <key>\n"
+            "  uinput-inject key <keycode> [hold_ms]\n");
         return 2;
     }
     const char *cmd = argv[1];
@@ -199,6 +205,28 @@ int main(int argc, char **argv) {
         usleep(45000);
         destroy_dev(fd);
         printf("已单击 %s\n", argv[2]);
+        return 0;
+    }
+
+    if (strcmp(cmd, "key") == 0) {
+        // key <keycode> [hold_ms] —— 直接按内核 keycode 单击。
+        // tap 只认首字母（"backspace" 会变成 b 键），要测 Esc/Backspace/方向键
+        // 这类非字母键就得走这条。
+        if (argc < 3) { fprintf(stderr, "key 需要一个 keycode\n"); return 2; }
+        int kc = atoi(argv[2]);
+        int hold = argc > 3 ? atoi(argv[3]) : 60;
+        if (kc <= 0) { fprintf(stderr, "keycode 无效: %s\n", argv[2]); return 2; }
+        int fd = create_dev("xime-inject-kbd", 0);
+        if (fd < 0) return 1;
+        sleep(2);
+        emit(fd, EV_KEY, kc, 1);
+        emit(fd, EV_SYN, SYN_REPORT, 0);
+        usleep(hold * 1000);
+        emit(fd, EV_KEY, kc, 0);
+        emit(fd, EV_SYN, SYN_REPORT, 0);
+        usleep(45000);
+        destroy_dev(fd);
+        printf("已单击 keycode=%d（按住 %dms）\n", kc, hold);
         return 0;
     }
 

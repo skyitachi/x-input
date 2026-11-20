@@ -38,10 +38,52 @@ detect_desktop() {
     esac
 }
 
-# KDE 的虚拟键盘列表只认桌面条目。包里的条目缺失时（例如直接从源码目录跑），
-# 退回可执行文件路径——KWin 也接受直接给一个可执行文件。
+# KDE 的 [Wayland] InputMethod 只认桌面条目，不认可执行文件。
+# 实测：把它写成裸二进制路径后 KWin 一个进程都不拉起（日志里静默无事发生），
+# 写成 /usr/share/applications/org.fcitx.Fcitx5.desktop 则立刻启动 fcitx5。
+# 所以系统目录里没有条目时，在用户目录补一个同内容的条目。
+user_desktop() {
+    printf '%s/.local/share/applications/xime.desktop' "$(user_home)"
+}
+
+write_user_desktop() {
+    d=$(user_desktop)
+    mkdir -p "$(dirname "$d")"
+    cat >"$d" <<EOF
+[Desktop Entry]
+Type=Application
+Name=xime
+Name[zh_CN]=xime 中文输入法
+GenericName=Input Method
+Comment=Wayland-native Chinese input method (no fcitx/ibus framework)
+Exec=$BIN
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+NoDisplay=true
+StartupNotify=false
+X-KDE-StartupNotify=false
+# KWin 靠这一行把条目认成「输入法」，选中后写进 kwinrc 的 [Wayland] InputMethod
+X-KDE-Wayland-VirtualKeyboard=true
+EOF
+    # 被 sudo 调用时别让文件变成 root 所有，否则用户自己改不动
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        chown -R "$SUDO_USER": "$(dirname "$d")" 2>/dev/null || true
+    fi
+    say "  KDE: 系统里没有 $DESKTOP，已生成 $d"
+}
+
 im_entry() {
-    if [ -f "$DESKTOP" ]; then printf '%s' "$DESKTOP"; else printf '%s' "$BIN"; fi
+    if [ -f "$DESKTOP" ]; then printf '%s' "$DESKTOP"; return 0; fi
+    d=$(user_desktop)
+    if [ ! -f "$d" ]; then
+        if [ "$DRY" -eq 1 ]; then
+            printf '[dry-run] 生成桌面条目 %s\n' "$d" >&2
+        else
+            write_user_desktop >&2
+        fi
+    fi
+    printf '%s' "$d"
 }
 
 # fcitx5 可能以 systemd 用户单元的形态存在（Omarchy 的 omarchy-fcitx5.service
@@ -105,6 +147,45 @@ split_key() {
     done
     key=$pending
     mods=${mods# }
+}
+
+# 当前操作用户的家目录：被 sudo 调用时用发起者的，别写到 /root 下
+user_home() {
+    if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+        getent passwd "$SUDO_USER" | cut -d: -f6
+    else
+        printf '%s\n' "$HOME"
+    fi
+}
+
+# KDE 上还有一层隐性前提：Qt/GTK 的 IM 模块变量。
+#
+# 只要会话里存在 QT_IM_MODULE=fcitx（GTK_IM_MODULE 同理），Qt/GTK 应用会走 fcitx 的
+# DBus 客户端模块，**根本不创建 zwp_text_input_v3** —— xime 的提交无处可送，
+# 表现就是「输入法起来了、候选窗也弹，字却打不进去」。
+#
+# 这两个变量通常由 im-config 或用户自己写进 environment.d。xime 不需要它们
+# （应用直接走 Wayland text-input），所以安装时把它们注释掉，并保留备份。
+kde_env_fix() {
+    home=$(user_home)
+    changed=0
+    for f in "$home"/.config/environment.d/*.conf "$home"/.config/plasma-workspace/env/*.sh; do
+        [ -f "$f" ] || continue
+        grep -qE '^[[:space:]]*(export[[:space:]]+)?(QT_IM_MODULE|GTK_IM_MODULE|XMODIFIERS)=' "$f" || continue
+        say "  $f 里设置了 IM 模块变量 → 会让 Qt/GTK 应用绕过 Wayland text-input"
+        if [ "$DRY" -eq 1 ]; then continue; fi
+        cp -n "$f" "$f.xime-backup" 2>/dev/null || true
+        # 整行注释（而不是只注释变量名）：`export #QT_IM_MODULE=...` 虽然能跑，
+        # 但 `export` 不带参数会把整个环境打印一遍，登录脚本里很吵。
+        sed -i -E '/^[[:space:]]*(export[[:space:]]+)?(QT_IM_MODULE|GTK_IM_MODULE|XMODIFIERS)=/s/^/#xime: /' "$f"
+        changed=1
+    done
+    if [ "$changed" -eq 1 ]; then
+        say "  已注释掉（原文件备份为 *.xime-backup）。"
+        say "  **需要重新登录一次**：环境变量只在登录时导入，改完当次会话不生效。"
+    else
+        say "  IM 模块变量: 无（应用会走 Wayland text-input，符合预期）"
+    fi
 }
 
 kde_apply() {
@@ -324,6 +405,7 @@ case "$MODE" in
         # KWINRC 是给打包 QA 用的测试钩子：指向临时文件时不需要 root 也能跑合并逻辑
         if [ "$(id -u)" -eq 0 ] || [ -n "${KWINRC:-}" ]; then
             kde_apply
+            kde_env_fix
         elif command -v sudo >/dev/null 2>&1; then
             exec sudo "$0" --kde-default
         else
