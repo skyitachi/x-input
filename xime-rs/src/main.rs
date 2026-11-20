@@ -117,6 +117,8 @@ struct Xime {
     visible: bool,
     done_serial: u32,
     engine: Engine,
+    /// 候选页码（翻页）。候选集变化时归零；翻页键 -/= 与 PageUp/PageDown 调整。
+    page: usize,
     km: Option<Keymap>,
     keymap_raw: Vec<u8>,
     mods_depressed: u32,
@@ -152,6 +154,13 @@ struct Xime {
     /// Slint 候选窗渲染器。Some = 用 Slint，None = 手写 Canvas（--legacy-ui）。
     /// 进程级只初始化一次，Wayland 前端独占。
     slint_ui: Option<ui_slint::SlintUi>,
+}
+
+/// 候选按页切片的 [start, end)。page 越界时回退到第 0 页（候选集可能已变）。
+fn page_range(total: usize, page: usize, page_size: usize) -> (usize, usize) {
+    let start = (page * page_size).min(total);
+    let end = (start + page_size).min(total);
+    (start, end)
 }
 
 impl Xime {
@@ -238,6 +247,7 @@ impl Xime {
             visible: false,
             done_serial: 0,
             engine,
+            page: 0,
             km: None,
             keymap_raw: Vec::new(),
             mods_depressed: 0,
@@ -869,6 +879,7 @@ impl Xime {
         if self.chinese && is_variant_toggle(sym, self.mods_depressed) {
             self.variant = self.variant.toggled();
             self.engine.set_variant(self.variant);
+            self.page = 0;
             self.refresh()?;
             if idx < CONSUMED_MAX {
                 self.consumed[idx] = true;
@@ -887,20 +898,22 @@ impl Xime {
             return self.on_key_en(time, key, state, sym);
         }
 
-        // 数字选词
+        // 数字选词：序号按当前页算（1-9 对应页内第 1-9 条），超出当前页范围的序号透传
         if (b'1' as u32..=b'9' as u32).contains(&sym) {
             if self.engine.active() {
-                let pick = (sym - b'1' as u32) as usize;
-                let text = self
-                    .engine
-                    .cands
-                    .get(pick)
-                    .cloned()
-                    .unwrap_or_else(|| self.engine.input.clone());
-                self.commit_text(&text)?;
-                if idx < CONSUMED_MAX {
-                    self.consumed[idx] = true;
+                let page_size = self.style.max_items();
+                let in_page = ((sym - b'1' as u32) as usize) < page_size;
+                let pick = self.page * page_size + (sym - b'1' as u32) as usize;
+                if in_page {
+                    if let Some(text) = self.engine.cands.get(pick).cloned() {
+                        self.commit_text(&text)?;
+                        if idx < CONSUMED_MAX {
+                            self.consumed[idx] = true;
+                        }
+                        return Ok(());
+                    }
                 }
+                self.forward_key(time, key, state)?;
                 return Ok(());
             }
             self.forward_key(time, key, state)?;
@@ -908,9 +921,35 @@ impl Xime {
         }
 
         match sym {
+            // 翻页：上一页 -/PageUp、下一页 =/PageDown。边界不循环，越界时吞键不动作
+            // （与 fcitx5 一致，不把 -/= 漏给应用）。无组字时透传。
+            keymap::KS_MINUS | keymap::KS_PAGE_UP => {
+                if self.engine.active() && self.page > 0 {
+                    self.page -= 1;
+                    self.refresh()?;
+                    if idx < CONSUMED_MAX {
+                        self.consumed[idx] = true;
+                    }
+                    return Ok(());
+                }
+                self.forward_key(time, key, state)?;
+            }
+            keymap::KS_EQUAL | keymap::KS_PAGE_DOWN => {
+                let page_size = self.style.max_items();
+                if self.engine.active() && (self.page + 1) * page_size < self.engine.cands.len() {
+                    self.page += 1;
+                    self.refresh()?;
+                    if idx < CONSUMED_MAX {
+                        self.consumed[idx] = true;
+                    }
+                    return Ok(());
+                }
+                self.forward_key(time, key, state)?;
+            }
             keymap::KS_BACKSPACE => {
                 if self.engine.active() {
                     self.engine.backspace();
+                    self.page = 0;
                     self.refresh()?;
                     if idx < CONSUMED_MAX {
                         self.consumed[idx] = true;
@@ -943,6 +982,7 @@ impl Xime {
             keymap::KS_ESCAPE => {
                 if self.engine.active() {
                     self.engine.reset();
+                    self.page = 0;
                     self.refresh()?;
                     if idx < CONSUMED_MAX {
                         self.consumed[idx] = true;
@@ -955,6 +995,7 @@ impl Xime {
                 // 字母：进组字缓冲
                 if let Some(ch) = ascii_letter(sym) {
                     self.engine.push_char(ch);
+                    self.page = 0;
                     self.refresh()?;
                     if idx < CONSUMED_MAX {
                         self.consumed[idx] = true;
@@ -1075,7 +1116,8 @@ impl Xime {
             }
             return Ok(());
         }
-        if let Some(s) = self.engine.cands.first().cloned() {
+        let page_size = self.style.max_items();
+        if let Some(s) = self.engine.cands.get(self.page * page_size).cloned() {
             return self.commit_text(&s);
         }
         if self.engine.active() {
@@ -1123,6 +1165,7 @@ impl Xime {
             // 进入密码框：清掉组字残留，避免半截拼音/补全突然上屏
             self.engine.reset();
             self.en.reset();
+            self.page = 0;
             self.popup_hide()?;
         }
         self.field_passthrough = pw;
@@ -1194,6 +1237,7 @@ impl Xime {
         self.send_preedit("", 0)?;
         self.engine.reset();
         self.en.reset();
+        self.page = 0;
         self.popup_hide()?;
         Ok(())
     }
@@ -1250,6 +1294,10 @@ impl Xime {
         if cands.is_empty() {
             self.popup_hide()?;
         } else {
+            // 候选集可能已变（如退格），页码越界则回退到第 0 页，避免候选窗消失
+            if self.page > 0 && self.page * self.style.max_items() >= cands.len() {
+                self.page = 0;
+            }
             self.popup_update(&cands, popup::Mode::Zh)?;
         }
         Ok(())
@@ -1400,7 +1448,8 @@ impl Xime {
         if self.popup_surf == 0 {
             return Ok(());
         }
-        let shown: Vec<String> = cands.iter().take(self.style.max_items()).cloned().collect();
+        let (start, end) = page_range(cands.len(), self.page, self.style.max_items());
+        let shown: Vec<String> = cands[start..end].to_vec();
         if shown.is_empty() {
             return self.popup_hide();
         }
@@ -1636,8 +1685,8 @@ fn usage() {
     println!("                      用于微信/WPS/Electron/GNOME/X11 等自带 fcitx5-qt 的程序；");
     println!("                      与 fcitx5 及本程序的 Wayland 前端互斥，二者只能留一个");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
-    println!("  --render-test PATH [拼音]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
-    println!("  --ui-probe PATH [拼音] [scale]  用 Slint 软件渲染器画候选条写 BMP（可指定缩放校验 HiDPI）");
+    println!("  --render-test PATH [拼音] [页码]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
+    println!("  --ui-probe PATH [拼音] [scale] [页码]  用 Slint 软件渲染器画候选条写 BMP（可指定缩放/页码）");
     println!("  --probe             枚举合成器提供的全局对象");
     println!("  --bench             解码性能测试");
     println!("  --keymap-test PATH  解析一份 XKB keymap 并抽查按键");
@@ -1807,7 +1856,11 @@ fn main() {
             .map(|s| s.as_str())
             .unwrap_or("/tmp/popup.bmp");
         let input = args.get(i + 2).map(|s| s.as_str()).unwrap_or("nihao");
-        render_test(path, input, &style, variant, english);
+        let page = args
+            .get(i + 3)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        render_test(path, input, page, &style, variant, english);
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--ui-probe") {
@@ -1820,7 +1873,11 @@ fn main() {
             .get(i + 3)
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(1.0);
-        ui_probe(path, input, scale, &style);
+        let page = args
+            .get(i + 4)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        ui_probe(path, input, scale, page, &style);
         return;
     }
     if args.iter().any(|a| a == "--probe") {
@@ -2129,7 +2186,7 @@ fn probe_seat(
 }
 
 /// 把候选窗渲染成 BMP，用于肉眼校验字形、布局与配色
-fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Variant, english: bool) {
+fn render_test(path: &str, input: &str, page: usize, style: &popup::Style, variant: zh::Variant, english: bool) {
     let (cands, mode, label) = if english {
         let mut e = en::EnEngine::new();
         for ch in input.chars() {
@@ -2154,7 +2211,8 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
         )
     };
 
-    let shown: Vec<String> = cands.iter().take(style.max_items()).cloned().collect();
+    let (start, end) = page_range(cands.len(), page, style.max_items());
+    let shown: Vec<String> = cands[start..end].to_vec();
     if shown.is_empty() {
         eprintln!("无候选");
         std::process::exit(1);
@@ -2179,13 +2237,14 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
 /// Slint 候选条渲染探针：用 Slint 软件渲染器画一条候选并写 BMP，供肉眼校验。
 /// scale 参数用于验证 HiDPI 缩放（逻辑布局不变，输出物理像素按比例放大）。
 /// 形态/主题跟随命令行 --popup / --popup-cols / --theme。
-fn ui_probe(path: &str, input: &str, scale: f32, style: &popup::Style) {
+fn ui_probe(path: &str, input: &str, scale: f32, page: usize, style: &popup::Style) {
     dict::init();
     let mut e = Engine::new();
     for c in input.chars() {
         e.push_char(c);
     }
-    let cands: Vec<String> = e.cands.iter().take(style.max_items()).cloned().collect();
+    let (start, end) = page_range(e.cands.len(), page, style.max_items());
+    let cands: Vec<String> = e.cands[start..end].to_vec();
     if cands.is_empty() {
         eprintln!("无候选");
         std::process::exit(1);
@@ -2439,5 +2498,22 @@ mod tests {
         // 拼音不需要大小写，走另一条路径
         assert_eq!(ascii_letter(b'A' as u32), Some('a'));
         assert_eq!(ascii_letter(b'a' as u32), Some('a'));
+    }
+
+    #[test]
+    fn page_range_bounds() {
+        // 第 0 页：从 0 起，取满一页
+        assert_eq!(page_range(20, 0, 6), (0, 6));
+        // 中间页
+        assert_eq!(page_range(20, 1, 6), (6, 12));
+        // 末页不满一页：end 收在 total
+        assert_eq!(page_range(20, 3, 6), (18, 20));
+        // 页码越界：start 收在 total，得到空切片（回退到第 0 页由调用方负责）
+        assert_eq!(page_range(20, 4, 6), (20, 20));
+        // 空候选
+        assert_eq!(page_range(0, 0, 6), (0, 0));
+        // 恰好一页时下一页翻不动
+        assert_eq!(page_range(9, 0, 9), (0, 9));
+        assert_eq!(page_range(9, 1, 9), (9, 9));
     }
 }

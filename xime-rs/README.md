@@ -415,6 +415,26 @@ sudo pacman -U dist/xime-0.3.0-1-x86_64.pkg.tar.zst
 xime-setup --status
 ```
 
+### 源码直装（开发/自用，不打 deb 包）
+
+改了代码只想在本机试，用不带 sudo 的这一条：
+
+```sh
+packaging/xime-install            # cargo build --release + 装到 ~/.local/bin + 校验哈希
+packaging/xime-install --no-build # 只装现有的 target/release/xime
+packaging/xime-install --fix-desktop  # .desktop 的 Exec 与安装路径错位时顺手改写
+```
+
+**为什么必须有这一步**：`xime-switch` / `xime-setup` 都**不装二进制**。`xime-switch`
+拉起的只是 `~/.local/bin/xime` 这份拷贝，KDE 下更绕——kwinrc 的 `InputMethod`
+指向 `xime.desktop`，而它的 `Exec` 是写死的绝对路径。所以「`cargo build` 出来的
+`target/release/xime`」和「实际在跑的那份」是两条互不相干的线：漏装一次就会一直跑
+旧版，而且没有任何报错。`xime-install` 把两步合成一条，装完打印两份 md5 与
+`--version`，顺带检查 `.desktop` 的 `Exec` 是否指向本次安装路径。
+
+装的时候若 xime 正在跑，它会提示：进程持有的是已加载的旧映射，替换文件不会换代码，
+需要 `xime-switch fcitx5` 再 `xime-switch xime` 让 KWin 重新拉起。
+
 ### 让桌面「选到」xime
 
 Wayland 没有输入法注册表，所以不存在一个跨桌面通用的「输入法列表」。能不能选，

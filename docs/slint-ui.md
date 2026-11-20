@@ -122,6 +122,12 @@ XIME_SCALE=2 ./target/release/xime --verbose
 # 指定缩放校验 HiDPI（物理尺寸按比例放大，外观一致）
 ./target/release/xime --ui-probe /tmp/slint2x.bmp nihao 2
 #   → 756x76（正好 2x）
+
+# 指定页码（第 4 参）预览翻页后的候选窗，走真实的 page_range 切片
+./target/release/xime --ui-probe /tmp/page1.bmp yi 1 1
+#   → 第 2 页（候选 7~12），序号从 1 重新编号
+# --render-test 同样支持页码（第 3 参，因它没有 scale 参数）
+./target/release/xime --render-test /tmp/page1.bmp yi 1
 ```
 
 `--popup` / `--popup-cols` / `--theme` 对 Slint UI **已生效**：形态（横排/竖排/网格）、
@@ -141,7 +147,7 @@ XIME_SCALE=2 ./target/release/xime --verbose
   （见 `docs/screenshots/scale-normalized.png`），证明字体是矢量按 scale 重绘。
   修复过一个初始化 bug：scale=1.0 时 `set_scale` 被"相同值跳过"短路导致缓冲未分配而 panic，
   已改为初始 scale 哨兵值 0.0 强制首次分配。
-- **测试**：`cargo test --release` 51 项全过；release 编译通过（无警告）。
+- **测试**：`cargo test --release` 52 项全过；release 编译通过（无警告）。
 - **体积**：release 二进制 9.0MB → **15.9MB**（Slint + 字体栈 + 渲染器，+7MB）。
   这是放弃零依赖的直接代价。
 
