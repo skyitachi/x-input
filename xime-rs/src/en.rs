@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn 词表规模与排序() {
+    fn dict_size_and_order() {
         assert_eq!(word_count(), 10000, "词表应为 10000 词");
         let d = data();
         // 字母序：任意两个相邻词必须非降序
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn 前缀补全按词频排序() {
+    fn prefix_completion_sorted_by_freq() {
         // 直接查数据层，避免被「末尾附加原样」干扰
         let mut out = Vec::new();
         data().complete("hel", 9, &mut out);
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn 补全结果是真前缀且不重复() {
+    fn completion_is_true_prefix_and_unique() {
         for p in ["a", "th", "con", "pre", "zz"] {
             let e = typed(p, 9);
             let mut seen = std::collections::HashSet::new();
@@ -300,14 +300,14 @@ mod tests {
     }
 
     #[test]
-    fn 无匹配时保留原样可上屏() {
+    fn no_match_keeps_original() {
         let e = typed("zzzq", 6);
         assert_eq!(e.cands.len(), 1, "无补全时应只剩原样: {:?}", e.cands);
         assert_eq!(e.cands[0], "zzzq");
     }
 
     #[test]
-    fn 原样永远在候选里() {
+    fn original_always_in_candidates() {
         // 已经是个完整词时也要能被原样上屏（大小写不同也算）
         let e = typed("hello", 6);
         assert!(e.cands.iter().any(|c| c.eq_ignore_ascii_case("hello")));
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn 大小写形态() {
+    fn case_variants() {
         let e = typed("hel", 9);
         assert_eq!(e.case_mode(), Case::Lower);
 
@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn 退格与复位() {
+    fn backspace_and_reset() {
         let mut e = typed("hel", 9);
         e.backspace(9);
         assert_eq!(e.buf, "he");
@@ -354,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn 候选数不超过上限() {
+    fn candidate_count_within_limit() {
         for cap in [1, 2, 6, 9] {
             let e = typed("a", cap);
             assert!(e.cands.len() <= cap.max(1), "cap={cap} 时出了 {} 条", e.cands.len());

@@ -483,7 +483,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 颜色三种写法() {
+    fn color_three_formats() {
         assert_eq!(parse_color("#fff"), Some(crate::render::argb(255, 255, 255, 255)));
         assert_eq!(parse_color("#1a1b26"), Some(crate::render::argb(255, 26, 27, 38)));
         // #AARRGGBB：alpha 在前
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn ini_解析段与键() {
+    fn ini_parse_sections_and_keys() {
         let ini = Ini::parse(
             "# 注释\n[InputPanel]\nNormalColor=#a9b1d6\n\n[InputPanel/TextMargin]\nLeft=12\nRight=12\n",
         );
@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn fcitx_主题映射() {
+    fn fcitx_theme_mapping() {
         let ini = Ini::parse(
             "[InputPanel]\n\
              NormalColor=#a9b1d6\n\
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn xime_自有格式只覆盖写了的键() {
+    fn xime_format_only_overrides_written_keys() {
         let ini = Ini::parse("[colors]\nbg=#112233\n[metrics]\npad_x=20\n");
         let t = Theme::from_xime(&ini, "t");
         assert_eq!(t.colors.bg, crate::render::argb(255, 0x11, 0x22, 0x33));
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn 默认主题与旧硬编码一致() {
+    fn default_theme_matches_hardcoded() {
         let d = Metrics::default();
         assert_eq!(
             (d.pad_x, d.pad_y, d.item_pad_x, d.item_gap, d.row_gap, d.radius),

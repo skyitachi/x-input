@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn 常用词() {
+    fn common_words() {
         for (input, want) in [
             ("nihao", "你好"),
             ("nihaoma", "你好吗"),
@@ -317,26 +317,26 @@ mod tests {
     }
 
     #[test]
-    fn 整句解码() {
+    fn sentence_decode() {
         assert_eq!(top("woshiyigexuesheng"), "我是一个学生");
         assert_eq!(top("jintiantianqihenhao"), "今天天气很好");
         assert_eq!(top("zhonghuarenmingongheguo"), "中华人民共和国");
     }
 
     #[test]
-    fn 简拼() {
+    fn abbreviated_spelling() {
         assert_eq!(top("nh"), "你好");
         assert_eq!(top("zg"), "这个");
     }
 
     #[test]
-    fn 尾部补全() {
+    fn tail_completion() {
         assert_eq!(top("nih"), "你好");
         assert_eq!(top("wom"), "我们");
     }
 
     #[test]
-    fn 多音字() {
+    fn polyphonic_chars() {
         assert_eq!(top("yinhang"), "银行");
         assert_eq!(top("xingzou"), "行走");
         assert_eq!(top("chongqing"), "重庆");
@@ -344,19 +344,19 @@ mod tests {
     }
 
     #[test]
-    fn ü写作v() {
+    fn umlaut_written_as_v() {
         assert_eq!(top("lvxing"), "旅行");
         assert_eq!(top("nvhai"), "女孩");
     }
 
     #[test]
-    fn 码位直输() {
+    fn codepoint_direct_input() {
         assert_eq!(top("u4f60"), "你");
         assert_eq!(top("u597d"), "好");
     }
 
     #[test]
-    fn 退格() {
+    fn backspace() {
         crate::dict::init();
         let mut e = Engine::new();
         for c in "nihao".chars() {
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn 候选不重复() {
+    fn candidates_unique() {
         let c = all("nihao");
         let mut d = c.clone();
         d.sort();
@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn 输入长度上限() {
+    fn input_length_limit() {
         crate::dict::init();
         let mut e = Engine::new();
         for _ in 0..100 {
@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn 重置清空状态() {
+    fn reset_clears_state() {
         crate::dict::init();
         let mut e = Engine::new();
         for c in "nihao".chars() {
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn 英文与数字不进组字() {
+    fn ascii_not_composed() {
         crate::dict::init();
         let mut e = Engine::new();
         // 大写字母由调用方转小写后再进引擎，引擎本身只接受已确定的字符
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn 内联候选包含编号() {
+    fn inline_candidates_numbered() {
         crate::dict::init();
         let mut e = Engine::new();
         for c in "nihao".chars() {
@@ -431,7 +431,7 @@ mod tests {
     /// 简体模式下候选里不许出现繁体字：词库源数据里 `變成`/`变成` 混着存，
     /// 不过滤就会简繁混排（而且繁体那条词频更高，会排到第一）。
     #[test]
-    fn 简体模式不混入繁体() {
+    fn simplified_no_traditional() {
         crate::dict::init();
         let hant = "變學國說後髮幹麵裡臺灣龍鳳愛寶藏";
         for input in ["biancheng", "toufa", "ganjing", "houlai", "taiwan", "xuexi", "shuofa"] {
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn 繁体模式按词转换() {
+    fn traditional_word_level_conversion() {
         crate::dict::init();
         let mut e = Engine::new();
         e.set_variant(Variant::Hant);
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn 切换形态即时重算() {
+    fn variant_switch_recomputes() {
         crate::dict::init();
         let mut e = Engine::new();
         for ch in "biancheng".chars() {
