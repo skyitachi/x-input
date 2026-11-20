@@ -5,10 +5,13 @@
   pinyin.txt          单字全部读音（Unicode 16 进制码点 -> 带调拼音）
   large_pinyin.txt    词组逐字读音（比按单字拼更可靠，多音字在词中读音正确）
   jieba_dict.txt      词频，偏新闻/书面语料
-  zh_freq_50k.txt     词频，来自 OpenSubtitles，偏口语
+  zh_freq_50k.txt     词频，来自 OpenSubtitles，偏口语（简繁混杂，约 3% 繁体计数）
 
 为什么要把两套词频混起来：单用 jieba 时「你好」只有 725 次，「号码」却有 8000 次，
 于是 "nihaoma" 会被解成「你/号码」；口语语料里「你好」有 5 万次，混合后才符合直觉。
+
+混合前做简繁归一：语料里的繁体计数（什麼/裏/後）归并到简体主形，异体词
+（甚么）归并到规范写法，否则繁体字会带着十万级词频挤进候选前列。
 
 输出：src/dict_gen.h —— 音节表、词条 blob、按拼音排序的索引、简拼索引。
 """
@@ -36,6 +39,38 @@ PROB_SCALE = 1e9            # 概率放大成整数词频
 CONSONANT_ONLY = {"m", "n", "ng", "hm", "hng"}
 # 常见但拼音特殊的字，挂到一个用户真正会敲的键上
 KEY_ALIAS = {"嗯": "en"}
+
+# ---- 简繁/异体清洗 ----------------------------------------------------------------
+# 词频语料是简繁混杂的：OpenSubtitles 字幕约 3% 计数是繁体（什麼 57953、裏 17945…），
+# jieba 里也有「甚么 r/著 n」这类异体词条。不做归一化的话，繁体计数会直接灌进词库，
+# 候选窗里出现简繁混排（著 zhe 排到第 4 位、甚么排到第 2 位）。
+#
+# 三条规则（按顺序）：
+# 1. t2s 归并：但不能裸用——OpenCC 的 t2s 会把「乾坤」误转成「干坤」（乾 qián 是
+#    合法简体字），所以对 t2s 会改变的词再做 round-trip 校验：
+#    s2t(t2s(w)) == s2t(w) → 真繁体，归并；否则 → t2s 误判，保留原形。
+# 2. t2s 不认的同形异体字（著/甚）：逐字替换成规范字，但仅当替换形在语料里
+#    计数占优才归并——「看著」→「看着」（字幕里的著几乎都是繁体的着）归并，
+#    「著作」→「着作」（计数为 0）自动保留，无需手工维护词表。
+#    注意 t2s(甚麼) = 甚么（「甚→什」的单字映射不存在），这步顺便把它纠到什么。
+
+# 同形异体字替换表：字 → 规范简体字（配合计数占优判断，不是无差别替换）
+CHAR_VARIANT = {"著": "着", "甚": "什"}
+
+# 单字读音黑名单：这些读音下的字是繁体用法，不应进简体词库的单字候选。
+# 「著」读 zhe/zhuo 时就是繁体「着」（看著/朝著）；读 zhu（著作）才是合法简体。
+CHAR_READING_DROP = {"著": {"zhe", "zhuo"}}
+
+
+def _opencc():
+    try:
+        import opencc
+    except ImportError:
+        sys.exit(
+            "需要 python3-opencc 做词频简繁归一：Arch 上 sudo pacman -S python-opencc，"
+            "其他平台 pip install opencc"
+        )
+    return opencc.OpenCC("t2s"), opencc.OpenCC("s2t")
 
 
 def toneless(s):
@@ -100,17 +135,45 @@ def load_counts(name):
     return counts
 
 
+def make_norm():
+    """构造词形归一化闭包：繁体归并 + 同形异体替换，供词频与词组收录共用。"""
+    t2s, s2t = _opencc()
+    raw = defaultdict(int)
+    for name in ("jieba_dict.txt", "zh_freq_50k.txt"):
+        for w, c in load_counts(name).items():
+            raw[w] += c
+
+    def norm(w):
+        s = t2s.convert(w)
+        if s != w and s2t.convert(s) == s2t.convert(w):
+            w = s  # 真繁体：归到简体主形
+        if any(c in CHAR_VARIANT for c in w):
+            alt = "".join(CHAR_VARIANT.get(c, c) for c in w)
+            if alt != w and raw[alt] > raw[w]:
+                w = alt
+        return w
+
+    return norm
+
+
 def load_freq():
-    """两套语料按概率混合，返回 {词: 整数词频}。"""
+    """两套语料按概率混合，返回 {词: 整数词频}。
+
+    混合前先做简繁归一：繁体形计数（什麼/裏/後…）合并到简体主形，
+    同形异体（著/甚）在替换形计数占优时归并到规范写法。这样繁体词频
+    不会虚高，词库里也几乎不再出现繁体形词条（gen-zh.py 的 trad 位图
+    只剩零星兜底）。
+    """
+    norm = make_norm()
     jieba = load_counts("jieba_dict.txt")
     sub = load_counts("zh_freq_50k.txt")
     tj = sum(jieba.values()) or 1
     ts = sum(sub.values()) or 1
     prob = defaultdict(float)
     for w, c in jieba.items():
-        prob[w] += W_JIEBA * c / tj
+        prob[norm(w)] += W_JIEBA * c / tj
     for w, c in sub.items():
-        prob[w] += W_SUB * c / ts
+        prob[norm(w)] += W_SUB * c / ts
     return {w: max(1, min(int(p * PROB_SCALE), 0xFFFFFFFF)) for w, p in prob.items()}
 
 
@@ -123,6 +186,7 @@ def build_rows():
     pinyins = load_pinyin()
     phrases = load_phrases()
     freqs = load_freq()
+    norm = make_norm()
 
     # 1) 单字：只在词频表里出现过的字才收录，避免生僻字把图集撑大
     char_freq = {w: n for w, n in freqs.items() if len(w) == 1 and is_han(w)}
@@ -133,6 +197,9 @@ def build_rows():
             continue
         for rank, r in enumerate(readings[:3]):
             key = toneless(r)
+            # 繁体用法的读音不进单字候选（著 zhe/zhuo = 繁体「着」）
+            if key in CHAR_READING_DROP.get(ch, ()):
+                continue
             if not re.match(r"^[a-z]{1,6}$", key):
                 continue
             if key in CONSONANT_ONLY:
@@ -157,6 +224,9 @@ def build_rows():
 
     ph_rows = []
     for word, readings in phrases.items():
+        # 词组读音表（phrase-pinyin-data）同样简繁/异体混杂（甚么/甚麼/看著…），
+        # 收录前先归一到规范写法，读音逐字对应不受影响
+        word = norm(word)
         L = len(word)
         if L < 2 or L > 6 or not all(is_han(c) for c in word):
             continue

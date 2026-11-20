@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn 三种形态高度符合行数() {
+    fn three_shapes_height_matches_rows() {
         let c = Canvas::new(1, 1);
         let lh = c.line_height();
         let v = cands();
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn 竖排比横排窄且更高() {
+    fn vertical_narrower_and_taller() {
         let c = Canvas::new(1, 1);
         let v = cands();
         let (hw, hh) = measure(&c, &v, &style(Layout::Horizontal));
@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn 网格列数受候选数约束() {
+    fn grid_cols_bounded_by_candidates() {
         let c = Canvas::new(1, 1);
         let two = vec!["你好".to_string(), "你号".to_string()];
         let s = Style { layout: Layout::Grid, cols: 5, dark: false, ..Style::default() };
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn 绘制不越界且各形态可复用() {
+    fn draw_within_bounds_and_reusable() {
         for layout in [Layout::Horizontal, Layout::Vertical, Layout::Grid] {
             for dark in [false, true] {
                 let s = Style { layout, cols: 3, dark, ..Style::default() };
@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn 英文态强调色不同但尺寸一致() {
+    fn english_accent_differs_but_size_same() {
         let s = Style::default();
         let v = vec!["help".to_string(), "held".to_string(), "hello".to_string()];
         let probe = Canvas::new(1, 1);
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn 显示条数随形态变化() {
+    fn visible_count_varies_by_shape() {
         assert_eq!(style(Layout::Horizontal).max_items(), 6);
         assert_eq!(style(Layout::Vertical).max_items(), 9);
         assert_eq!(Style { layout: Layout::Grid, cols: 3, dark: false, ..Style::default() }.max_items(), 9);
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn 形态名称可往返解析() {
+    fn shape_name_roundtrip_parse() {
         for l in [Layout::Horizontal, Layout::Vertical, Layout::Grid] {
             assert_eq!(Layout::parse(l.name()), Some(l));
         }

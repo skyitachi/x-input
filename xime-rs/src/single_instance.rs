@@ -68,7 +68,7 @@ mod tests {
     }
 
     #[test]
-    fn 第二次加锁会被拒绝() {
+    fn second_lock_rejected() {
         let p = tmp_path("busy");
         match acquire_at(&p) {
             Lock::Acquired(fd) => {
@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn 锁随进程关闭而释放() {
+    fn lock_released_on_process_exit() {
         let p = tmp_path("release");
         match acquire_at(&p) {
             Lock::Acquired(fd) => {
@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn 目录不可写时降级为可用() {
+    fn unwritable_dir_degrades_to_available() {
         assert!(matches!(acquire_at("/nonexistent-dir-xyz/xime.lock"), Lock::Unavailable));
     }
 }

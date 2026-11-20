@@ -265,7 +265,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 单字与整词转换() {
+    fn single_char_and_word_conversion() {
         assert_eq!(to_hant("中华"), "中華");
         assert_eq!(to_hant("中国人"), "中國人");
         assert_eq!(to_hant("今天天气很好"), "今天天氣很好");
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn 词级例外优先于逐字() {
+    fn word_level_exception_over_char() {
         // 逐字会得到 頭發 / 幹淨，词级例外必须纠正
         assert_eq!(to_hant("头发"), "頭髮");
         assert_eq!(to_hant("出发"), "出發");
@@ -283,16 +283,20 @@ mod tests {
     }
 
     #[test]
-    fn 无需转换时借用() {
+    fn borrow_when_no_conversion() {
         assert!(matches!(to_hant("abc"), Cow::Borrowed(_)));
         assert!(matches!(to_hant("已經"), Cow::Borrowed(_)));
         assert!(matches!(to_hant(""), Cow::Borrowed(_)));
     }
 
     #[test]
-    fn 繁体形词条可识别() {
+    fn traditional_entry_recognizable() {
         let n = trad_word_count();
-        assert!(n > 1000, "繁体形词条数异常: {n}");
+        // mkdict.py 词频归一化后，语料里的繁体计数已并入简体主形，
+        // 词库只剩零星繁体形词条（t2s 误判保留的乾坤类 + 非规范写法）。
+        // 若重新膨胀到上千，说明归一化失效或 zh.bin 与 dict.bin 不同步。
+        assert!(n < 1000, "繁体形词条数异常（词频归一化可能失效）: {n}");
+        assert!(n > 0, "繁体形词条应仍有零星存在");
         // 越界索引不应 panic
         assert!(keep_entry(usize::MAX, Variant::Hans));
         assert!(keep_entry(usize::MAX, Variant::Hant));
@@ -300,7 +304,7 @@ mod tests {
 
     /// 简体模式下，可见条目不得隐含繁体写法
     #[test]
-    fn 简体模式隐藏繁体形条目() {
+    fn simplified_hides_traditional_entries() {
         let (_, _, nw) = stats();
         let mut hidden = 0;
         for i in 0..nw {
@@ -321,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn 变体名称可往返() {
+    fn variant_name_roundtrip() {
         for s in ["hans", "s", "simplified", "简体"] {
             assert_eq!(Variant::parse(s), Some(Variant::Hans));
         }

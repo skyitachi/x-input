@@ -10,6 +10,7 @@ mod proto;
 mod render;
 mod shm;
 mod single_instance;
+mod ui_slint;
 mod wire;
 mod zh;
 
@@ -24,6 +25,38 @@ const SHM_FORMAT_ARGB8888: u32 = 0;
 const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 const KEY_PRESSED: u32 = 1;
 const CONSUMED_MAX: usize = 768;
+
+/// 走哪一套 Wayland 输入法协议。
+///
+/// v2 是 wlroots 系（Hyprland/sway/labwc）的现状；KWin 6.6 仍停在 v1。
+/// 两套协议对「候选窗放哪」「不消费的键怎么还回去」的做法完全不同，
+/// 但按键路由、引擎、渲染是同一套——所以只在协议出入口分叉。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Frontend {
+    /// 自动：注册表里出现哪个用哪个（v2 优先）
+    Auto,
+    V2,
+    V1,
+}
+
+impl Frontend {
+    fn label(self) -> &'static str {
+        match self {
+            Frontend::Auto => "auto",
+            Frontend::V2 => "v2",
+            Frontend::V1 => "v1",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Frontend> {
+        match s {
+            "auto" => Some(Frontend::Auto),
+            "v2" | "input-method-v2" => Some(Frontend::V2),
+            "v1" | "kwin" | "input-method-v1" => Some(Frontend::V1),
+            _ => None,
+        }
+    }
+}
 
 struct Buffer {
     shm: Shm,
@@ -42,11 +75,44 @@ struct Xime {
     seat: u32,
     im_manager: u32,
     vk_manager: u32,
+    /// 主显示器（第一个 wl_output），用于读取整数 scale 作为回退
+    output: u32,
+    /// 分数缩放管理器（wp_fractional_scale_manager_v1），0 = 合成器不支持
+    frac_scale_mgr: u32,
+    /// 绑定到 popup surface 的分数缩放对象，收到 preferred_scale 事件
+    frac_scale: u32,
+    /// viewporter 全局（支持任意分数缩放的逻辑尺寸声明）
+    viewporter: u32,
+    /// 绑定到 popup surface 的 wp_viewport 对象
+    viewport: u32,
+    /// 当前缩放来源与值（逻辑→物理），Slint 与 shm 缓冲共用
+    scale: f32,
+    /// 是否用环境变量 XIME_SCALE 锁定了缩放（锁定后忽略合成器的 scale 事件）
+    scale_locked: bool,
     im: u32,
     grab: u32,
     popup_surf: u32,
     popup_role: u32,
     vk: u32,
+    /// 实际在用的协议（Auto 在注册表扫描时解析成 V1/V2）
+    fe: Frontend,
+    /// v1：zwp_input_method_v1 对象（KWin 直接给，没有 manager）
+    im1: u32,
+    /// v1：当前输入上下文 id，由合成器在 activate 事件里分配
+    ctx: u32,
+    /// v1：zwp_input_panel_v1 的注册表 name（延后到首次弹候选窗时才 bind，
+    /// 该接口同一时刻只允许一个客户端持有，早绑可能在切换输入法时被拒）
+    panel_global: u32,
+    /// v1：候选窗角色 zwp_input_panel_v1（候选窗 surface 本身复用 popup_surf）
+    panel: u32,
+    /// v1：commit_state 给的最新 serial，commit_string / preedit_string 都要带上
+    ctx_serial: u32,
+    /// v1：最近一次 wl_keyboard.key 的 serial，转发按键时原样带回
+    key_serial: u32,
+    /// 注册表扫描的结束锚点（wl_callback）：到这一刻才能确定「到底拿到了哪套席位」
+    sync_cb: u32,
+    /// 扫描完发现没有任何输入法席位：退出码 1，避免静默占着单实例锁
+    no_seat: bool,
     buf: Option<Buffer>,
     visible: bool,
     done_serial: u32,
@@ -83,6 +149,9 @@ struct Xime {
     /// 配置文件指纹与上次检查时间（热重载用）
     cfg_stamp: u64,
     cfg_checked: Option<std::time::Instant>,
+    /// Slint 候选窗渲染器。Some = 用 Slint，None = 手写 Canvas（--legacy-ui）。
+    /// 进程级只初始化一次，Wayland 前端独占。
+    slint_ui: Option<ui_slint::SlintUi>,
 }
 
 impl Xime {
@@ -94,6 +163,8 @@ impl Xime {
         start_english: bool,
         en_passthrough: bool,
         args: Vec<String>,
+        use_slint: bool,
+        fe: Frontend,
     ) -> Option<Xime> {
         let conn = match Conn::connect() {
             Ok(c) => c,
@@ -105,6 +176,34 @@ impl Xime {
         dict::init();
         let mut engine = Engine::new();
         engine.set_variant(variant);
+
+        // 初始缩放：XIME_SCALE 环境变量优先（便于覆盖/测试）。
+        // 合成器的 fractional scale / wl_output scale 会在连接建立后到达并覆盖它。
+        let env_scale = std::env::var("XIME_SCALE")
+            .ok()
+            .and_then(|s| s.parse::<f32>().ok());
+        let scale_locked = env_scale.is_some();
+        let init_scale = env_scale.unwrap_or(1.0);
+
+        // Slint UI：set_platform 是进程级一次性操作，这里只在 Wayland 前端初始化。
+        // 失败时（例如平台已设置）自动回退到手写渲染，不让输入法起不来。
+        let slint_ui = if use_slint {
+            match ui_slint::SlintUi::new(init_scale, &style) {
+                Some(ui) => {
+                    eprintln!(
+                        "xime: 候选窗使用 Slint 软件渲染，初始 scale={init_scale}，形态={}",
+                        style.layout.name()
+                    );
+                    Some(ui)
+                }
+                None => {
+                    eprintln!("xime: Slint 初始化失败，回退到手写渲染");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Some(Xime {
             conn,
             reg: 0,
@@ -114,11 +213,27 @@ impl Xime {
             seat: 0,
             im_manager: 0,
             vk_manager: 0,
+            output: 0,
+            frac_scale_mgr: 0,
+            frac_scale: 0,
+            viewporter: 0,
+            viewport: 0,
+            scale: init_scale,
+            scale_locked,
             im: 0,
             grab: 0,
             popup_surf: 0,
             popup_role: 0,
             vk: 0,
+            fe,
+            im1: 0,
+            ctx: 0,
+            panel_global: 0,
+            panel: 0,
+            ctx_serial: 0,
+            key_serial: 0,
+            sync_cb: 0,
+            no_seat: false,
             buf: None,
             visible: false,
             done_serial: 0,
@@ -145,6 +260,7 @@ impl Xime {
             args,
             cfg_stamp: config::stamp(),
             cfg_checked: None,
+            slint_ui,
         })
     }
 
@@ -154,9 +270,41 @@ impl Xime {
         }
     }
 
+    /// 应用合成器报告的缩放。XIME_SCALE 锁定时忽略。变化时同步给 Slint，
+    /// 若候选窗正显示则重渲染一帧，避免切换显示器后候选条尺寸不变。
+    fn apply_scale(&mut self, scale: f32, source: &str) {
+        if self.scale_locked {
+            return;
+        }
+        if (scale - self.scale).abs() < 0.001 {
+            return;
+        }
+        self.scale = scale;
+        if let Some(ui) = self.slint_ui.as_mut() {
+            ui.set_scale(scale);
+        }
+        self.log(&format!("缩放 {scale:.3} ← {source}"));
+        // 用当前候选重画一帧，让尺寸立即生效（来源与正常刷新路径一致）
+        if self.visible {
+            let cands = self.engine.cands.clone();
+            if !cands.is_empty() {
+                let mode = if self.chinese {
+                    popup::Mode::Zh
+                } else {
+                    popup::Mode::En
+                };
+                let _ = self.popup_update(&cands, mode);
+            }
+        }
+    }
+
     fn run(&mut self) -> std::io::Result<()> {
         self.reg = self.conn.alloc_id();
         proto::get_registry(&mut self.conn, self.reg)?;
+        // registry 的 global 事件流没有「结束」信号，用一次 sync 当锚点：
+        // 回调到时就能确定自己拿到了哪套协议的席位（v2 manager / v1 对象）。
+        self.sync_cb = self.conn.alloc_id();
+        proto::sync(&mut self.conn, self.sync_cb)?;
 
         while self.running {
             // 先把已读进缓冲的消息全部处理完，再去阻塞等待
@@ -177,6 +325,11 @@ impl Xime {
     }
 
     fn dispatch(&mut self, mut m: Incoming) -> std::io::Result<()> {
+        // XIME_TRACE=1：打印收到的每条消息（对象 + opcode），排查「按键到底有没有送到」
+        // 这类问题时用——候选窗不出来和按键没到是完全不同的两个原因。
+        if std::env::var_os("XIME_TRACE").is_some() {
+            eprintln!("trace: obj={} opcode={}", m.obj, m.opcode);
+        }
         if m.obj == DISPLAY_ID && m.opcode == 0 {
             let _obj = m.args.u32();
             let code = m.args.u32();
@@ -194,17 +347,53 @@ impl Xime {
             }
             return Ok(());
         }
+        if self.sync_cb != 0 && m.obj == self.sync_cb && m.opcode == 0 {
+            self.after_registry();
+            return Ok(());
+        }
         if self.im != 0 && m.obj == self.im {
             return self.on_im(m.opcode, &mut m);
         }
+        // v1：输入法对象与它按焦点创建的上下文是两个对象，事件语义也不同
+        if self.im1 != 0 && m.obj == self.im1 {
+            return self.on_im1(m.opcode, &mut m);
+        }
+        if self.ctx != 0 && m.obj == self.ctx {
+            return self.on_ctx1(m.opcode, &mut m);
+        }
         if self.grab != 0 && m.obj == self.grab {
-            return self.on_grab(m.opcode, &mut m);
+            // v1 抓来的抓取对象就是标准 wl_keyboard（keymap/key/modifiers 的 opcode 与 v2 抓取对象不同）
+            return if self.fe == Frontend::V1 {
+                self.on_kb1(m.opcode, &mut m)
+            } else {
+                self.on_grab(m.opcode, &mut m)
+            };
         }
         if self.popup_role != 0 && m.obj == self.popup_role {
             // text_input_rectangle：光标矩形，合成器用它定位候选窗，这里只需记录
             if m.opcode == 0 && self.verbose {
                 let (x, y, w, h) = (m.args.i32(), m.args.i32(), m.args.i32(), m.args.i32());
                 println!("xime: 光标矩形 {x},{y} {w}x{h}");
+            }
+            return Ok(());
+        }
+        if self.output != 0 && m.obj == self.output {
+            // wl_output.scale (event 3, since v2): int factor
+            if m.opcode == 3 {
+                let factor = m.args.i32();
+                if factor > 0 {
+                    self.apply_scale(factor as f32, "wl_output");
+                }
+            }
+            return Ok(());
+        }
+        if self.frac_scale != 0 && m.obj == self.frac_scale {
+            // wp_fractional_scale_v1.preferred_scale (event 0): uint，值 = scale × 120
+            if m.opcode == 0 {
+                let v = m.args.u32();
+                if v > 0 {
+                    self.apply_scale(v as f32 / 120.0, "fractional-scale");
+                }
             }
             return Ok(());
         }
@@ -216,7 +405,14 @@ impl Xime {
             proto::IFACE_COMPOSITOR => {
                 self.comp_ver = version.min(4);
                 self.comp = self.conn.alloc_id();
-                proto::bind(&mut self.conn, self.reg, name, iface, self.comp_ver, self.comp)?;
+                proto::bind(
+                    &mut self.conn,
+                    self.reg,
+                    name,
+                    iface,
+                    self.comp_ver,
+                    self.comp,
+                )?;
             }
             proto::IFACE_SHM => {
                 self.shm_global = self.conn.alloc_id();
@@ -224,15 +420,77 @@ impl Xime {
             }
             proto::IFACE_SEAT => {
                 self.seat = self.conn.alloc_id();
-                proto::bind(&mut self.conn, self.reg, name, iface, version.min(5), self.seat)?;
+                proto::bind(
+                    &mut self.conn,
+                    self.reg,
+                    name,
+                    iface,
+                    version.min(5),
+                    self.seat,
+                )?;
             }
             proto::IFACE_INPUT_METHOD => {
-                self.im_manager = self.conn.alloc_id();
-                proto::bind(&mut self.conn, self.reg, name, iface, 1, self.im_manager)?;
+                // v2：得先有 manager，再由 manager + seat 建输入法对象
+                if self.fe != Frontend::V1 {
+                    self.fe = Frontend::V2;
+                    self.im_manager = self.conn.alloc_id();
+                    proto::bind(&mut self.conn, self.reg, name, iface, 1, self.im_manager)?;
+                }
+            }
+            proto::IFACE_INPUT_METHOD_V1 => {
+                // 只有「由合成器拉起」（WAYLAND_SOCKET）的连接上才会有这个全局，
+                // 而且出现了就不需要 seat、不需要 manager：对象本身就是输入法。
+                if self.fe == Frontend::Auto {
+                    self.fe = Frontend::V1;
+                }
+                if self.fe == Frontend::V1 {
+                    self.im1 = self.conn.alloc_id();
+                    proto::bind(&mut self.conn, self.reg, name, iface, 1, self.im1)?;
+                    self.log(&format!(
+                        "使用 input-method {} 前端（KWin）",
+                        self.fe.label()
+                    ));
+                }
+            }
+            proto::IFACE_INPUT_PANEL => {
+                // 候选窗角色用，先只记名字：该接口同一时刻只允许一个客户端持有，
+                // 真正需要弹候选窗时（activate）再 bind，避免切换输入法时抢绑定。
+                self.panel_global = name;
+                self.log("记录 zwp_input_panel_v1（候选窗角色，用到时再 bind）");
+                return Ok(());
             }
             proto::IFACE_VIRTUAL_KEYBOARD => {
                 self.vk_manager = self.conn.alloc_id();
                 proto::bind(&mut self.conn, self.reg, name, iface, 1, self.vk_manager)?;
+            }
+            proto::IFACE_OUTPUT => {
+                // 只取第一个 output 作为整数 scale 回退来源（多显示器下 fractional scale 更准）
+                if self.output == 0 {
+                    self.output = self.conn.alloc_id();
+                    proto::bind(
+                        &mut self.conn,
+                        self.reg,
+                        name,
+                        iface,
+                        version.min(4),
+                        self.output,
+                    )?;
+                }
+            }
+            proto::IFACE_FRACTIONAL_SCALE => {
+                self.frac_scale_mgr = self.conn.alloc_id();
+                proto::bind(
+                    &mut self.conn,
+                    self.reg,
+                    name,
+                    iface,
+                    1,
+                    self.frac_scale_mgr,
+                )?;
+            }
+            proto::IFACE_VIEWPORTER => {
+                self.viewporter = self.conn.alloc_id();
+                proto::bind(&mut self.conn, self.reg, name, iface, 1, self.viewporter)?;
             }
             _ => {
                 self.log(&format!("忽略全局对象 {iface} v{version}"));
@@ -241,6 +499,40 @@ impl Xime {
         }
         self.log(&format!("绑定 {iface} v{version}"));
         self.try_init()
+    }
+
+    /// 注册表扫描结束：确认到底拿到了哪套协议的席位。
+    ///
+    /// 这一步不能省。单实例锁在连接之前就已经拿下，如果这里发现自己其实没有席位却继续挂着，
+    /// 合成器随后拉起的那份实例会因为锁被占而「安静退出」——用户看到的是输入法完全不工作、
+    /// 且没有任何报错。宁可自己失败退出，把位置让给真正的拉起方。
+    fn after_registry(&mut self) {
+        if self.im_manager != 0 || self.im1 != 0 {
+            self.log(&format!("协议前端确定：{}", self.fe.label()));
+            return;
+        }
+        self.no_seat = true;
+        self.running = false;
+        eprintln!(
+            "xime: 合成器没有给出输入法席位（没有 zwp_input_method_v2，也没有 zwp_input_method_v1）"
+        );
+        if wire::inherited_socket_str().is_some() {
+            eprintln!(
+                "xime: 本次是被合成器拉起的（WAYLAND_SOCKET），却没有拿到席位 → 请确认桌面条目带了 X-KDE-Wayland-VirtualKeyboard=true"
+            );
+        } else {
+            eprintln!(
+                "xime: 本次是自行连接的普通客户端。KDE 下 KWin 只把 zwp_input_method_v1 交给它自己拉起的进程，"
+            );
+            eprintln!(
+                "xime: 手工执行 `xime &` 在 KDE 上拿不到席位；改用 xime-switch xime（写 kwinrc 的 [Wayland] InputMethod）"
+            );
+        }
+        if self.fe == Frontend::V2 {
+            eprintln!(
+                "xime: 当前指定了 --frontend v2，但这个合成器没有 zwp_input_method_manager_v2（KDE 请用 v1/auto）"
+            );
+        }
     }
 
     /// seat 与 input-method manager 都到位后才能创建输入法对象
@@ -268,33 +560,24 @@ impl Xime {
                     proto::im_grab_keyboard(&mut self.conn, self.im, id)?;
                     self.grab = id;
                 }
-                proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
-                proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+                self.send_preedit("", 0)?;
             }
             1 => {
+                // deactivate
                 self.log("deactivate");
                 self.engine.reset();
                 self.popup_hide()?;
-                proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
-                proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+                // grab 键盘对象在 deactivate 后由合成器销毁，必须清零；
+                // 否则下次 activate 时 self.grab != 0 会跳过重新 grab，
+                // 输入法就再也收不到按键（表现为打字直接进应用、候选窗不弹）。
+                self.grab = 0;
+                self.send_preedit("", 0)?;
             }
             4 => {
-                // content_type(hint, purpose)：应用声明的输入框类型。
-                // password=8 / pin=9 → 全键透传；terminal=14 → 英文态透传。
+                // content_type(hint, purpose)：应用声明的输入框类型
                 let hint = m.args.u32();
                 let purpose = m.args.u32();
-                let pw = purpose == 8 || purpose == 9;
-                let term = purpose == 14;
-                self.log(&format!("content_type: hint={hint} purpose={purpose}"));
-                if pw && !self.field_passthrough {
-                    // 进入密码框：清掉组字残留，避免半截拼音/补全突然上屏
-                    self.engine.reset();
-                    self.en.reset();
-                    self.popup_hide()?;
-                }
-                self.field_passthrough = pw;
-                self.terminal_purpose = term;
-                self.selftest()?;
+                self.apply_content_type(hint, purpose)?;
             }
             5 => {
                 // done：每收到一次，可用的 commit serial 上限加一
@@ -311,54 +594,200 @@ impl Xime {
         Ok(())
     }
 
-    fn on_grab(&mut self, opcode: u16, m: &mut Incoming) -> std::io::Result<()> {
-        match opcode {
-            0 => {
-                // keymap(format, fd, size)
-                let _format = m.args.u32();
-                let fd = self.conn.take_fd();
-                let size = m.args.u32() as usize;
-                if fd >= 0 && size > 0 {
-                    let raw = read_fd(fd, size);
-                    unsafe { libc::close(fd) };
-                    if let Ok(bytes) = raw {
-                        let text = String::from_utf8_lossy(&bytes).into_owned();
-                        self.log(&format!("keymap 事件：声明 {size} 字节，实读 {} 字节", bytes.len()));
-                        match Keymap::parse(&text) {
-                            Some(k) => {
-                                self.log(&format!("keymap 已解析（{} 键）", k.count()));
-                                self.km = Some(k);
-                                self.keymap_raw = bytes;
-                            }
-                            None => {
-                                // 有些合成器（如 Hyprland 在某些 grab 场景）会送来只有
-                                // keycodes、没有 symbols 的残缺 keymap。此时保留上一份能用的
-                                // keymap —— 丢掉它会让所有按键解释崩掉（非 US 布局、
-                                // 修饰键全错），比不做任何事更糟。
-                                let head: String = text.chars().take(40).collect();
-                                if self.km.is_some() {
-                                    self.log(&format!(
-                                        "keymap 解析失败（开头: {head:?}），继续沿用上一份 keymap"
-                                    ));
-                                } else {
-                                    self.log(&format!(
-                                        "keymap 解析失败（开头: {head:?}），回退内置 US 布局"
-                                    ));
-                                    self.km = Some(Keymap::us_layout());
-                                }
-                                if std::env::var_os("XIME_DUMP_KEYMAP").is_some() {
-                                    let _ = std::fs::write("/tmp/xime-keymap-fail.txt", &text);
-                                }
-                            }
-                        }
+    /// 解析合成器送来的 XKB keymap 文本。两套协议的 keymap 事件参数格式相同
+    /// （format uint / fd / size uint），差别只在拿它做什么。
+    fn on_keymap(&mut self, m: &mut Incoming) -> std::io::Result<()> {
+        let _format = m.args.u32();
+        let fd = self.conn.take_fd();
+        let size = m.args.u32() as usize;
+        if fd < 0 || size == 0 {
+            return Ok(());
+        }
+        let raw = read_fd(fd, size);
+        unsafe { libc::close(fd) };
+        if let Ok(bytes) = raw {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            self.log(&format!(
+                "keymap 事件：声明 {size} 字节，实读 {} 字节",
+                bytes.len()
+            ));
+            match Keymap::parse(&text) {
+                Some(k) => {
+                    self.log(&format!("keymap 已解析（{} 键）", k.count()));
+                    self.km = Some(k);
+                    self.keymap_raw = bytes;
+                }
+                None => {
+                    // 有些合成器（如 Hyprland 在某些 grab 场景）会送来只有
+                    // keycodes、没有 symbols 的残缺 keymap。此时保留上一份能用的
+                    // keymap —— 丢掉它会让所有按键解释崩掉（非 US 布局、
+                    // 修饰键全错），比不做任何事更糟。
+                    let head: String = text.chars().take(40).collect();
+                    if self.km.is_some() {
+                        self.log(&format!(
+                            "keymap 解析失败（开头: {head:?}），继续沿用上一份 keymap"
+                        ));
+                    } else {
+                        self.log(&format!(
+                            "keymap 解析失败（开头: {head:?}），回退内置 US 布局"
+                        ));
+                        self.km = Some(Keymap::us_layout());
+                    }
+                    if std::env::var_os("XIME_DUMP_KEYMAP").is_some() {
+                        let _ = std::fs::write("/tmp/xime-keymap-fail.txt", &text);
                     }
                 }
-                // 把同一份 keymap 同步给虚拟键盘，否则回注的按键没有解释依据
-                let raw = self.keymap_raw.clone();
-                if !raw.is_empty() {
-                    self.vk_send_keymap(&raw)?;
+            }
+        }
+        // v2 靠虚拟键盘回注按键，必须把同一份 keymap 同步过去；
+        // v1 的回注走 context.key()，keycode 直接用合成器自己的布局，不需要这一步。
+        if self.fe != Frontend::V1 {
+            let raw = self.keymap_raw.clone();
+            if !raw.is_empty() {
+                self.vk_send_keymap(&raw)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// zwp_input_method_v1：只有 activate / deactivate，没有 manager、没有 done。
+    fn on_im1(&mut self, opcode: u16, m: &mut Incoming) -> std::io::Result<()> {
+        match opcode {
+            0 => {
+                // activate(id new_id)：id 由合成器分配（0xff000000 起），直接当已有对象用
+                let ctx = m.args.u32();
+                self.ctx = ctx;
+                self.ctx_serial = 0;
+                self.key_serial = 0;
+                self.engine.reset();
+                self.en.reset();
+                self.consumed.iter_mut().for_each(|c| *c = false);
+                self.log(&format!("activate（v1, ctx={ctx:#x}）"));
+                self.popup_create()?;
+                // grab_keyboard 是 v1 里唯一不带 serial 的请求（见 proto::ctx_grab_keyboard），
+                // 所以可以立刻抓。抓完合成器会把 keymap 与所有按键送到这个 wl_keyboard 上。
+                if self.grab == 0 {
+                    let kb = self.conn.alloc_id();
+                    proto::ctx_grab_keyboard(&mut self.conn, self.ctx, kb)?;
+                    self.grab = kb;
+                    self.log("已抓取键盘（v1）");
+                }
+                self.send_preedit("", 0)?;
+            }
+            1 => {
+                // deactivate(context)：按协议，输入法处理完后要销毁这个上下文
+                let ctx = m.args.u32();
+                self.log(&format!("deactivate（v1, ctx={ctx:#x}）"));
+                self.engine.reset();
+                self.en.reset();
+                self.popup_hide()?;
+                if ctx != 0 {
+                    proto::ctx_destroy(&mut self.conn, ctx)?;
+                }
+                self.ctx = 0;
+                self.grab = 0;
+                self.ctx_serial = 0;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// zwp_input_method_context_v1 的事件。
+    ///
+    /// opcode: 0 surrounding_text / 1 reset / 2 content_type / 3 invoke_action
+    ///         4 commit_state / 5 preferred_language
+    fn on_ctx1(&mut self, opcode: u16, m: &mut Incoming) -> std::io::Result<()> {
+        match opcode {
+            0 => {
+                // surrounding_text(text, cursor, anchor)：客户端当前文本的快照。
+                // 平时不用，但它是**唯一能反向确认「提交的文字真的进了客户端」**的东西，
+                // 端到端排查（尤其「候选窗有、上屏没反应」）时打开 verbose 就能看到。
+                if self.verbose {
+                    let text = m.args.string().unwrap_or_default();
+                    let cursor = m.args.u32();
+                    let anchor = m.args.u32();
+                    self.log(&format!(
+                        "surrounding_text（cursor={cursor} anchor={anchor}）: {text:?}"
+                    ));
                 }
             }
+            1 => {
+                // reset：客户端要求丢掉组字（失焦、清空输入框等）
+                self.log("reset");
+                self.engine.reset();
+                self.en.reset();
+                self.popup_hide()?;
+                self.send_preedit("", 0)?;
+            }
+            2 => {
+                let hint = m.args.u32();
+                let purpose = m.args.u32();
+                self.apply_content_type(hint, purpose)?;
+            }
+            3 => { /* invoke_action：软键盘动作，暂不使用 */ }
+            4 => {
+                // commit_state(serial)：此后所有改变文本状态的请求都要带这个 serial
+                self.ctx_serial = m.args.u32();
+                self.log(&format!("commit_state serial={}", self.ctx_serial));
+                // 第一个 serial 到手，这才有资格抓键盘
+                if self.grab == 0 && self.ctx != 0 {
+                    let kb = self.conn.alloc_id();
+                    proto::ctx_grab_keyboard(&mut self.conn, self.ctx, kb)?;
+                    self.grab = kb;
+                    self.log("已抓取键盘（v1）");
+                    self.send_preedit("", 0)?;
+                }
+            }
+            5 => { /* preferred_language */ }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// v1 抓到的键盘是标准 wl_keyboard，opcode 与 v2 的抓取对象不同：
+    /// 0 keymap / 1 enter / 2 leave / 3 key / 4 modifiers / 5 repeat_info
+    fn on_kb1(&mut self, opcode: u16, m: &mut Incoming) -> std::io::Result<()> {
+        match opcode {
+            0 => self.on_keymap(m)?,
+            1 | 2 => { /* enter / leave：焦点由 activate 事件表达，这里不需要 */ }
+            3 => {
+                let serial = m.args.u32();
+                let time = m.args.u32();
+                let key = m.args.u32();
+                let state = m.args.u32();
+                self.key_serial = serial;
+                self.log(&format!("key code={key} state={state}"));
+                self.on_key(time, key, state)?;
+            }
+            4 => {
+                let _serial = m.args.u32();
+                self.mods_depressed = m.args.u32();
+                self.mods_latched = m.args.u32();
+                self.mods_locked = m.args.u32();
+                self.group = m.args.u32();
+                // v1 没有虚拟键盘：修饰键状态变化必须显式还给应用，
+                // 否则单独按 Ctrl、Alt 的状态在应用侧永远是旧的。
+                if self.ctx != 0 {
+                    proto::ctx_modifiers(
+                        &mut self.conn,
+                        self.ctx,
+                        self.key_serial,
+                        self.mods_depressed,
+                        self.mods_latched,
+                        self.mods_locked,
+                        self.group,
+                    )?;
+                }
+            }
+            _ => { /* repeat_info：重复由合成器负责 */ }
+        }
+        Ok(())
+    }
+
+    fn on_grab(&mut self, opcode: u16, m: &mut Incoming) -> std::io::Result<()> {
+        match opcode {
+            0 => self.on_keymap(m)?,
             1 => {
                 // key(serial, time, key, state)
                 let _serial = m.args.u32();
@@ -557,13 +986,7 @@ impl Xime {
     /// 与中文共用「缓冲 + 候选窗 + 空格上屏」这套流程，所以数字选词、退格、Esc
     /// 的行为和中文完全一致，用户不用学两套。差别只在候选来源：那边是词网格解码，
     /// 这边是前缀补全。
-    fn on_key_en(
-        &mut self,
-        time: u32,
-        key: u32,
-        state: u32,
-        sym: u32,
-    ) -> std::io::Result<()> {
+    fn on_key_en(&mut self, time: u32, key: u32, state: u32, sym: u32) -> std::io::Result<()> {
         let idx = key as usize;
         let cap = self.style.max_items();
 
@@ -690,16 +1113,85 @@ impl Xime {
         Ok(())
     }
 
+    /// content_type 的公共处理。v1 的 purpose 与 v3 是同一套枚举（KWin 原样转发），
+    /// 但 v1 没有 pin，且 terminal 在 v3 里是 13，两个值都认，避免版本差异。
+    fn apply_content_type(&mut self, hint: u32, purpose: u32) -> std::io::Result<()> {
+        let pw = purpose == 8 || purpose == 9;
+        let term = purpose == 13 || purpose == 14;
+        self.log(&format!("content_type: hint={hint} purpose={purpose}"));
+        if pw && !self.field_passthrough {
+            // 进入密码框：清掉组字残留，避免半截拼音/补全突然上屏
+            self.engine.reset();
+            self.en.reset();
+            self.popup_hide()?;
+        }
+        self.field_passthrough = pw;
+        self.terminal_purpose = term;
+        self.selftest()
+    }
+
+    /// 输入法是否已经拿到可写文本的目标（v2 是输入法对象，v1 是当前上下文）
+    fn ready(&self) -> bool {
+        match self.fe {
+            Frontend::V1 => self.ctx != 0,
+            _ => self.im != 0,
+        }
+    }
+
+    /// 写回组字串。v2 先改状态再 commit(serial)；v1 直接发，带 commit_state 的 serial。
+    fn send_preedit(&mut self, text: &str, cursor: i32) -> std::io::Result<()> {
+        match self.fe {
+            Frontend::V1 => {
+                if self.ctx == 0 {
+                    return Ok(());
+                }
+                // 第三参是 KWin 变体里的 commit 字符串（标准 XML 写的是 cursor int，
+                // 见 proto::ctx_preedit 的注释）。组字期间没有「随预编辑一起提交」的内容。
+                proto::ctx_preedit(&mut self.conn, self.ctx, self.ctx_serial, text, "")
+            }
+            _ => {
+                if self.im == 0 {
+                    return Ok(());
+                }
+                proto::im_set_preedit(&mut self.conn, self.im, text, cursor, cursor)?;
+                // serial 必须等于已收到的 done 事件计数，否则严格实现的合成器会静默丢弃
+                proto::im_commit(&mut self.conn, self.im, self.done_serial)
+            }
+        }
+    }
+
+    /// 上屏一段文字。v1 的 commit_string 自带「清空预编辑」语义，不需要再补一次空 preedit。
+    fn send_commit_string(&mut self, text: &str) -> std::io::Result<()> {
+        match self.fe {
+            Frontend::V1 => {
+                if self.ctx == 0 {
+                    return Ok(());
+                }
+                proto::ctx_commit_string(&mut self.conn, self.ctx, self.ctx_serial, text)
+            }
+            _ => {
+                if self.im == 0 {
+                    return Ok(());
+                }
+                proto::im_commit_string(&mut self.conn, self.im, text)
+            }
+        }
+    }
+
     fn commit_text(&mut self, text: &str) -> std::io::Result<()> {
-        if self.im == 0 {
+        if !self.ready() {
             return Ok(());
         }
-        self.log(&format!("commit \"{text}\" (serial={})", self.done_serial));
+        let serial = if self.fe == Frontend::V1 {
+            self.ctx_serial
+        } else {
+            self.done_serial
+        };
+        self.log(&format!("commit \"{text}\" (serial={serial})"));
         if !text.is_empty() {
-            proto::im_commit_string(&mut self.conn, self.im, text)?;
+            self.send_commit_string(text)?;
         }
-        proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
-        proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+        self.send_preedit("", 0)?;
         self.engine.reset();
         self.en.reset();
         self.popup_hide()?;
@@ -724,6 +1216,10 @@ impl Xime {
         }
         self.cfg_stamp = stamp;
         self.style = parse_style(&self.args);
+        // Slint 路径也同步形态/主题：颜色、度量、布局、列数都可能变。
+        if let Some(ui) = self.slint_ui.as_mut() {
+            ui.reload(&self.style);
+        }
         self.log(&format!(
             "配置已重载：主题={} 形态={}",
             self.style.theme.name,
@@ -732,7 +1228,7 @@ impl Xime {
     }
 
     fn refresh(&mut self) -> std::io::Result<()> {
-        if self.im == 0 {
+        if !self.ready() {
             return Ok(());
         }
         self.maybe_reload_config();
@@ -742,15 +1238,13 @@ impl Xime {
         if self.inline_cands {
             let s = self.engine.inline_preedit();
             let len = s.len() as i32;
-            proto::im_set_preedit(&mut self.conn, self.im, &s, len, len)?;
-            proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+            self.send_preedit(&s, len)?;
             self.popup_hide()?;
             return Ok(());
         }
         let p = self.engine.preedit.clone();
         let len = p.len() as i32;
-        proto::im_set_preedit(&mut self.conn, self.im, &p, len, len)?;
-        proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+        self.send_preedit(&p, len)?;
 
         let cands = self.engine.cands.clone();
         if cands.is_empty() {
@@ -768,15 +1262,13 @@ impl Xime {
     fn refresh_en(&mut self) -> std::io::Result<()> {
         let p = self.en.preedit().to_string();
         if p.is_empty() {
-            if self.im != 0 {
-                proto::im_set_preedit(&mut self.conn, self.im, "", 0, 0)?;
-                proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+            if self.ready() {
+                self.send_preedit("", 0)?;
             }
             return self.popup_hide();
         }
         let len = p.len() as i32;
-        proto::im_set_preedit(&mut self.conn, self.im, &p, len, len)?;
-        proto::im_commit(&mut self.conn, self.im, self.done_serial)?;
+        self.send_preedit(&p, len)?;
 
         let cands = self.en.cands.clone();
         if cands.is_empty() {
@@ -790,8 +1282,38 @@ impl Xime {
         Ok(())
     }
 
+    /// v1 的候选窗角色：zwp_input_panel_v1 同一时刻只允许一个客户端持有，
+    /// 所以延后到真的要弹候选窗时才 bind。
+    fn panel_ensure(&mut self) -> std::io::Result<()> {
+        if self.panel != 0 || self.panel_global == 0 {
+            return Ok(());
+        }
+        let id = self.conn.alloc_id();
+        proto::bind(
+            &mut self.conn,
+            self.reg,
+            self.panel_global,
+            proto::IFACE_INPUT_PANEL,
+            1,
+            id,
+        )?;
+        self.panel = id;
+        self.log("已绑定 zwp_input_panel_v1");
+        Ok(())
+    }
+
     fn popup_create(&mut self) -> std::io::Result<()> {
-        if self.popup_surf != 0 || self.comp == 0 || self.im == 0 {
+        if self.popup_surf != 0 || self.comp == 0 {
+            return Ok(());
+        }
+        // 先确认候选窗角色有归属对象：v2 是输入法对象，v1 是 input_panel
+        if self.fe == Frontend::V1 {
+            self.panel_ensure()?;
+            if self.panel == 0 {
+                self.log("没有 zwp_input_panel_v1，候选窗只能走内联形态");
+                return Ok(());
+            }
+        } else if self.im == 0 {
             return Ok(());
         }
         let surf = self.conn.alloc_id();
@@ -804,9 +1326,35 @@ impl Xime {
         proto::region_destroy(&mut self.conn, region)?;
 
         let role = self.conn.alloc_id();
-        proto::im_get_popup(&mut self.conn, self.im, role, surf)?;
+        if self.fe == Frontend::V1 {
+            // v1 没有 input_popup_surface：overlay panel 就是「贴着光标的浮层」，
+            // 位置由合成器按当前输入光标算，xime 自己不摆坐标
+            proto::panel_get_surface(&mut self.conn, self.panel, surf, role)?;
+            proto::panel_set_overlay(&mut self.conn, role)?;
+        } else {
+            proto::im_get_popup(&mut self.conn, self.im, role, surf)?;
+        }
         self.popup_surf = surf;
         self.popup_role = role;
+
+        // 绑定分数缩放：合成器按该 surface 所在显示器发 preferred_scale，
+        // 混合 DPI 多显示器下比全局 wl_output 更准。XIME_SCALE 锁定时无须绑定。
+        if self.frac_scale_mgr != 0 && !self.scale_locked {
+            self.frac_scale = self.conn.alloc_id();
+            proto::get_fractional_scale(
+                &mut self.conn,
+                self.frac_scale_mgr,
+                surf,
+                self.frac_scale,
+            )?;
+        }
+        // viewport：物理 buffer 需要声明对应的逻辑显示尺寸，合成器才不会
+        // 在缩放输出上把候选条放大成 scale 倍。scale=1 时不用设置。
+        if self.viewporter != 0 {
+            self.viewport = self.conn.alloc_id();
+            proto::get_viewport(&mut self.conn, self.viewporter, surf, self.viewport)?;
+        }
+
         proto::surface_commit(&mut self.conn, surf)?;
         self.log("候选窗 surface 已创建");
         Ok(())
@@ -838,7 +1386,13 @@ impl Xime {
             w * 4,
             SHM_FORMAT_ARGB8888,
         )?;
-        self.buf = Some(Buffer { shm, pool, buffer, w, h });
+        self.buf = Some(Buffer {
+            shm,
+            pool,
+            buffer,
+            w,
+            h,
+        });
         Ok(())
     }
 
@@ -846,26 +1400,51 @@ impl Xime {
         if self.popup_surf == 0 {
             return Ok(());
         }
-        let shown: Vec<String> =
-            cands.iter().take(self.style.max_items()).cloned().collect();
+        let shown: Vec<String> = cands.iter().take(self.style.max_items()).cloned().collect();
         if shown.is_empty() {
             return self.popup_hide();
         }
 
-        let probe = Canvas::new(1, 1);
-        let (w, h) = popup::measure(&probe, &shown, &self.style);
-        if w <= 0 || h <= 0 {
-            return Ok(());
-        }
-        self.ensure_buffer(w, h)?;
+        // 渲染来源：Slint 布局 + 软件光栅（默认），或手写 Canvas（--legacy-ui）。
+        // 两条路产出都是 ARGB8888 像素 + 尺寸，后面的 shm 上传流程完全相同。
+        let (w, h, pixels): (i32, i32, Vec<u32>) = if let Some(ui) = self.slint_ui.as_mut() {
+            let (w, h) = ui.render(&shown);
+            if w <= 0 || h <= 0 {
+                return self.popup_hide();
+            }
+            (w, h, ui.out().to_vec())
+        } else {
+            let probe = Canvas::new(1, 1);
+            let (w, h) = popup::measure(&probe, &shown, &self.style);
+            if w <= 0 || h <= 0 {
+                return Ok(());
+            }
+            let mut c = Canvas::new(w, h);
+            popup::paint(&mut c, &shown, &self.style, mode);
+            (w, h, c.px)
+        };
 
-        let mut c = Canvas::new(w, h);
-        popup::paint(&mut c, &shown, &self.style, mode);
+        self.ensure_buffer(w, h)?;
         if let Some(b) = &mut self.buf {
-            b.shm.upload(&c.px);
+            b.shm.upload(&pixels);
         }
         if let Some(b) = &self.buf {
             proto::surface_attach(&mut self.conn, self.popup_surf, Some(b.buffer), 0, 0)?;
+        }
+        // viewport：告诉合成器物理 buffer 对应的逻辑显示尺寸。Slint 按 scale 渲染，
+        // 这里把物理尺寸除回 scale，候选条在缩放屏上才维持与 scale=1 一致的视觉大小。
+        // legacy 渲染不涉及 scale，destination 就等于 buffer 尺寸（等效无缩放）。
+        if self.viewport != 0 {
+            let (lw, lh) = if self.slint_ui.is_some() {
+                let s = self.scale.max(0.01);
+                (
+                    ((w as f32) / s).round().max(1.0) as i32,
+                    ((h as f32) / s).round().max(1.0) as i32,
+                )
+            } else {
+                (w, h)
+            };
+            proto::viewport_set_destination(&mut self.conn, self.viewport, lw, lh)?;
         }
         if self.comp_ver >= 4 {
             proto::surface_damage_buffer(&mut self.conn, self.popup_surf, 0, 0, w, h)?;
@@ -906,11 +1485,27 @@ impl Xime {
         let mut shm = shm;
         shm.upload_bytes(raw);
         // sendmsg 已经把 fd 复制进内核，函数返回后关闭本地 fd 是安全的
-        proto::vk_keymap(&mut self.conn, self.vk, KEYMAP_FORMAT_XKB_V1, shm.fd, raw.len() as u32)?;
+        proto::vk_keymap(
+            &mut self.conn,
+            self.vk,
+            KEYMAP_FORMAT_XKB_V1,
+            shm.fd,
+            raw.len() as u32,
+        )?;
         Ok(())
     }
 
     fn forward_key(&mut self, time: u32, key: u32, state: u32) -> std::io::Result<()> {
+        // v1：把键原样还给应用。keycode 与合成器自己的布局一致，不需要重新解释，
+        // 也就没有「先同步 keymap 再注入」这一层（那是 v2 虚拟键盘的活）。
+        if self.fe == Frontend::V1 {
+            if self.ctx == 0 {
+                self.log(&format!("没有输入上下文，丢弃按键 {key}"));
+                return Ok(());
+            }
+            self.log(&format!("ctx 回注 key={key} state={state}"));
+            return proto::ctx_key(&mut self.conn, self.ctx, self.key_serial, time, key, state);
+        }
         if self.vk == 0 {
             self.log(&format!("vk 未就绪，丢弃按键 {key}"));
             return Ok(());
@@ -934,7 +1529,12 @@ fn read_fd(fd: i32, size: usize) -> std::io::Result<Vec<u8>> {
     let mut off = 0usize;
     while off < size {
         let n = unsafe {
-            libc::pread(fd, buf[off..].as_mut_ptr() as *mut libc::c_void, size - off, off as i64)
+            libc::pread(
+                fd,
+                buf[off..].as_mut_ptr() as *mut libc::c_void,
+                size - off,
+                off as i64,
+            )
         };
         if n <= 0 {
             break;
@@ -1012,15 +1612,24 @@ fn usage() {
     println!();
     println!("用法: xime [选项]");
     println!("  --verbose           打印协议与按键处理细节");
+    println!("  --frontend FE       输入法协议前端: auto(默认) | v2 | v1");
+    println!("                      v2: Hyprland/sway/labwc；v1: KDE/KWin（由 KWin 拉起时自动选）");
     println!("  --inline-candidates 把候选塞进 preedit 由应用字体渲染（不建候选窗）");
+    println!(
+        "  --legacy-ui         候选窗用手写 Canvas 渲染（默认用 Slint 软件渲染）；对照/救急用"
+    );
     println!("  --popup FORM        候选窗形态: horizontal(默认) | vertical | grid");
     println!("  --popup-cols N      网格形态的列数（默认 3）");
     println!("  --theme NAME        候选窗主题: light(默认) | dark | fcitx:NAME | 主题文件路径");
     println!("                      例: --theme fcitx:omarchy  直接用 fcitx5 的主题");
     println!("  --list-themes       列出能找到的 fcitx5 主题");
     println!("  --dump-theme        打印当前生效主题的颜色与度量（排查配置用）");
-    println!("  --zh VARIANT        输出形态: hans(默认,简体) | hant(繁体)；运行中 Ctrl+Shift+F 切换");
-    println!("  --en                启动即英文模式（默认不出候选窗，按键直接进应用，与 fcitx5 一致）");
+    println!(
+        "  --zh VARIANT        输出形态: hans(默认,简体) | hant(繁体)；运行中 Ctrl+Shift+F 切换"
+    );
+    println!(
+        "  --en                启动即英文模式（默认不出候选窗，按键直接进应用，与 fcitx5 一致）"
+    );
     println!("  --en-completion     英文模式启用前缀补全 + 候选窗（旧行为，按需开启）");
     println!("  --check             诊断：检查协议可用性与接线状态");
     println!("  --dbus              以 fcitx5 DBus 前端运行（接管 org.fcitx.Fcitx5）");
@@ -1028,6 +1637,7 @@ fn usage() {
     println!("                      与 fcitx5 及本程序的 Wayland 前端互斥，二者只能留一个");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
     println!("  --render-test PATH [拼音]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
+    println!("  --ui-probe PATH [拼音] [scale]  用 Slint 软件渲染器画候选条写 BMP（可指定缩放校验 HiDPI）");
     println!("  --probe             枚举合成器提供的全局对象");
     println!("  --bench             解码性能测试");
     println!("  --keymap-test PATH  解析一份 XKB keymap 并抽查按键");
@@ -1103,6 +1713,20 @@ fn parse_variant(args: &[String]) -> zh::Variant {
     }
 }
 
+/** 从命令行解析协议前端选择 */
+fn parse_frontend(args: &[String]) -> Frontend {
+    match flag_value(args, "--frontend") {
+        Some(v) => match Frontend::parse(&v) {
+            Some(f) => f,
+            None => {
+                eprintln!("xime: 未知前端 {v}（可选 auto/v2/v1）");
+                std::process::exit(2);
+            }
+        },
+        None => Frontend::Auto,
+    }
+}
+
 /** 列出能直接用的 fcitx5 主题 */
 fn list_themes() {
     println!("内置主题: light, dark");
@@ -1121,18 +1745,28 @@ fn list_themes() {
 fn dump_theme(s: &popup::Style) {
     let t = &s.theme;
     let m = &t.metrics;
-    println!("主题   {} ({})", t.name, if t.dark { "dark" } else { "light" });
+    println!(
+        "主题   {} ({})",
+        t.name,
+        if t.dark { "dark" } else { "light" }
+    );
     println!("形态   {}  cols={}", s.layout.name(), s.cols);
-    println!("颜色   bg={} border={} text={} accent={} selected_text={}",
+    println!(
+        "颜色   bg={} border={} text={} accent={} selected_text={}",
         config::to_hex(t.colors.bg),
         config::to_hex(t.colors.border),
         config::to_hex(t.colors.text),
         config::to_hex(t.colors.accent),
-        config::to_hex(t.colors.sel_text));
-    println!("度量   pad=({},{}) item_pad_x={} item_gap={} row_gap={}",
-        m.pad_x, m.pad_y, m.item_pad_x, m.item_gap, m.row_gap);
-    println!("       radius={} hl_radius={} hl_pad_y={} border_width={}",
-        m.radius, m.hl_radius, m.hl_pad_y, m.border_w);
+        config::to_hex(t.colors.sel_text)
+    );
+    println!(
+        "度量   pad=({},{}) item_pad_x={} item_gap={} row_gap={}",
+        m.pad_x, m.pad_y, m.item_pad_x, m.item_gap, m.row_gap
+    );
+    println!(
+        "       radius={} hl_radius={} hl_pad_y={} border_width={}",
+        m.radius, m.hl_radius, m.hl_pad_y, m.border_w
+    );
 }
 
 fn main() {
@@ -1154,7 +1788,10 @@ fn main() {
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--keymap-test") {
-        let path = args.get(i + 1).map(|s| s.as_str()).unwrap_or("/tmp/keymap.txt");
+        let path = args
+            .get(i + 1)
+            .map(|s| s.as_str())
+            .unwrap_or("/tmp/keymap.txt");
         keymap_test(path);
         return;
     }
@@ -1165,9 +1802,25 @@ fn main() {
         }
     }
     if let Some(i) = args.iter().position(|a| a == "--render-test") {
-        let path = args.get(i + 1).map(|s| s.as_str()).unwrap_or("/tmp/popup.bmp");
+        let path = args
+            .get(i + 1)
+            .map(|s| s.as_str())
+            .unwrap_or("/tmp/popup.bmp");
         let input = args.get(i + 2).map(|s| s.as_str()).unwrap_or("nihao");
         render_test(path, input, &style, variant, english);
+        return;
+    }
+    if let Some(i) = args.iter().position(|a| a == "--ui-probe") {
+        let path = args
+            .get(i + 1)
+            .map(|s| s.as_str())
+            .unwrap_or("/tmp/slint.bmp");
+        let input = args.get(i + 2).map(|s| s.as_str()).unwrap_or("你好");
+        let scale = args
+            .get(i + 3)
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(1.0);
+        ui_probe(path, input, scale, &style);
         return;
     }
     if args.iter().any(|a| a == "--probe") {
@@ -1202,6 +1855,8 @@ fn main() {
     // 前缀补全改成显式开启（--en-completion），因为它会在每个词上打扰输入。
     let en_completion = args.iter().any(|a| a == "--en-completion");
     let en_passthrough = args.iter().any(|a| a == "--en-passthrough") || !en_completion;
+    // 候选窗 UI：默认 Slint；--legacy-ui 回退到手写 Canvas（对照/救急用）。
+    let use_slint = !args.iter().any(|a| a == "--legacy-ui");
 
     // 单实例：systemd、KWin、XDG autostart、手工启动都可能在拉起 xime，
     // 谁先拿到锁谁当输入法，后来者安静退出（退出码 0，免得 systemd 反复重启）。
@@ -1218,12 +1873,18 @@ fn main() {
         english,
         en_passthrough,
         args.clone(),
+        use_slint,
+        parse_frontend(&args),
     ) {
         Some(x) => x,
         None => std::process::exit(1),
     };
     if let Err(e) = x.run() {
         eprintln!("xime: {e}");
+        std::process::exit(1);
+    }
+    // 没席位（见 after_registry）：退出码 1，区别于「已有实例」那种 0 的安静退出
+    if x.no_seat {
         std::process::exit(1);
     }
 }
@@ -1273,16 +1934,15 @@ fn check(variant: zh::Variant) {
         }
     }
 
-    let want = [
-        proto::IFACE_INPUT_METHOD,
-        proto::IFACE_VIRTUAL_KEYBOARD,
-        proto::IFACE_COMPOSITOR,
-        proto::IFACE_SHM,
-        proto::IFACE_SEAT,
-    ];
+    let has_v2 = have.iter().any(|(_, h, _)| h == proto::IFACE_INPUT_METHOD);
+    let has_v1 = have
+        .iter()
+        .any(|(_, h, _)| h == proto::IFACE_INPUT_METHOD_V1);
+    let has_panel = have.iter().any(|(_, h, _)| h == proto::IFACE_INPUT_PANEL);
+
     let mut ok = true;
     println!("协议可用性：");
-    for w in want {
+    for w in [proto::IFACE_COMPOSITOR, proto::IFACE_SHM, proto::IFACE_SEAT] {
         let has = have.iter().any(|(_, h, _)| h == w);
         println!("  {:<38} {}", w, if has { "可用" } else { "缺失" });
         if !has {
@@ -1290,9 +1950,39 @@ fn check(variant: zh::Variant) {
         }
     }
 
-    // 全局接口存在 ≠ 拿得到：这个席位同一时刻只属于一个客户端
-    let seat_g = have.iter().find(|(_, h, _)| h == proto::IFACE_SEAT).cloned();
-    let mgr_g = have.iter().find(|(_, h, _)| h == proto::IFACE_INPUT_METHOD).cloned();
+    // 输入法席位：v2（wlroots 系）与 v1（KWin）二选一，有哪个用哪个
+    match (has_v2, has_v1) {
+        (true, _) => println!("  {:<38} 可用（zwp_input_method_manager_v2）", "输入法席位"),
+        (false, true) => println!(
+            "  {:<38} 可用（zwp_input_method_v1，KWin 拉起时）",
+            "输入法席位"
+        ),
+        (false, false) => {
+            println!("  {:<38} 缺失", "输入法席位");
+            ok = false;
+        }
+    }
+    if has_v1 {
+        println!(
+            "  {:<38} {}",
+            "候选窗角色（v1）",
+            if has_panel {
+                "可用（zwp_input_panel_v1）"
+            } else {
+                "缺失，候选窗只能用 --inline-candidates"
+            }
+        );
+    }
+
+    // 全局接口存在 ≠ 拿得到：v2 的席位同一时刻只属于一个客户端
+    let seat_g = have
+        .iter()
+        .find(|(_, h, _)| h == proto::IFACE_SEAT)
+        .cloned();
+    let mgr_g = have
+        .iter()
+        .find(|(_, h, _)| h == proto::IFACE_INPUT_METHOD)
+        .cloned();
     if let (Some((seat_name, _, seat_ver)), Some((mgr_name, _, _))) = (seat_g, mgr_g) {
         match probe_seat(&mut c, reg, seat_name, seat_ver, mgr_name) {
             Ok(true) => println!("  {:<38} 空闲，xime 可以接管", "input-method 席位"),
@@ -1305,11 +1995,32 @@ fn check(variant: zh::Variant) {
 
     // 终端/普通应用能不能用输入法，取决于合成器有没有 text-input 管理器；
     // 没有它，终端即使拿到按键也不会把焦点交给输入法。
-    let ti = have
-        .iter()
-        .find(|(_, h, _)| h == "zwp_text_input_manager_v3" || h == "zwp_text_input_manager_v1");
-    match ti {
-        Some((_, h, _)) => println!("  {:<38} 可用（{h}）", "text-input（应用侧）"),
+    //
+    // v3/v2/v1 可能同时存在（KWin 三个都提供），现代应用走 v3。早先只取「第一个命中的」，
+    // KWin 下会报成 v1，看起来像「应用只能用老协议」，排查时很误导。
+    let ti: Vec<&str> = [
+        "zwp_text_input_manager_v3",
+        "zwp_text_input_manager_v2",
+        "zwp_text_input_manager_v1",
+    ]
+    .into_iter()
+    .filter(|w| have.iter().any(|(_, h, _)| h == w))
+    .collect();
+    match ti.split_first() {
+        Some((best, rest)) => {
+            let extra = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "；另有 {}",
+                    rest.iter()
+                        .map(|h| h.rsplit('_').next().unwrap_or(h))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                )
+            };
+            println!("  {:<38} 可用（{best}{extra}）", "text-input（应用侧）")
+        }
         None => println!(
             "  {:<38} 缺失，终端/应用无法把焦点交给输入法",
             "text-input（应用侧）"
@@ -1329,17 +2040,30 @@ fn check(variant: zh::Variant) {
 
     println!();
     println!("内置词条：{} 条", dict::word_count());
-    println!("英文词表：{} 词（前缀补全，Shift 切换中英）", en::word_count());
+    println!(
+        "英文词表：{} 词（前缀补全，Shift 切换中英）",
+        en::word_count()
+    );
     println!("字形数量：{} 个", font::Atlas::get().count());
     let (nc, np, nw) = zh::stats();
-    println!("简繁数据：{nc} 个单字映射 / {np} 条词级例外 / {nw} 条词表（{} 条繁体形词条）",
-        zh::trad_word_count());
+    println!(
+        "简繁数据：{nc} 个单字映射 / {np} 条词级例外 / {nw} 条词表（{} 条繁体形词条）",
+        zh::trad_word_count()
+    );
     println!(
         "输出形态：{}（--zh hant 或运行时 Ctrl+Shift+F 切换）",
         variant.label()
     );
-    if !have.iter().any(|(_, h, _)| h == proto::IFACE_INPUT_METHOD) {
-        eprintln!("合成器未提供 zwp_input_method_manager_v2：GNOME/Mutter 不支持该协议。");
+    if !has_v2 && !has_v1 {
+        eprintln!(
+            "合成器没提供任何输入法协议：GNOME/Mutter 两者都没有；\n\
+             KDE 下则说明这条连接不是 KWin 交给输入法的那条。"
+        );
+    } else if !has_v2 {
+        eprintln!(
+            "当前只有 zwp_input_method_v1（KDE/KWin）：必须由 KWin 拉起才能拿到席位，\n\
+             系统设置 → 键盘 → 虚拟键盘里选 xime，或 xime-setup --auto。"
+        );
     }
     if !ok {
         std::process::exit(1);
@@ -1349,13 +2073,17 @@ fn check(variant: zh::Variant) {
 /// 扫 /proc 找出正在跑的其它输入法（它们会占掉 input-method 席位）
 fn running_imes() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let Ok(dir) = std::fs::read_dir("/proc") else { return out };
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return out;
+    };
     for e in dir.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if !name.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
-        let Ok(cmd) = std::fs::read_to_string(e.path().join("cmdline")) else { continue };
+        let Ok(cmd) = std::fs::read_to_string(e.path().join("cmdline")) else {
+            continue;
+        };
         let argv0 = cmd.split('\0').next().unwrap_or("");
         let base = argv0.rsplit('/').next().unwrap_or("");
         if matches!(base, "fcitx5" | "fcitx" | "ibus-daemon" | "ibus") {
@@ -1407,7 +2135,11 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
         for ch in input.chars() {
             e.push_char(ch, style.max_items());
         }
-        (e.cands.clone(), popup::Mode::En, format!("英文/{}", e.case_mode_label()))
+        (
+            e.cands.clone(),
+            popup::Mode::En,
+            format!("英文/{}", e.case_mode_label()),
+        )
     } else {
         dict::init();
         let mut e = Engine::new();
@@ -1415,7 +2147,11 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
         for c in input.chars() {
             e.push_char(c);
         }
-        (e.cands.clone(), popup::Mode::Zh, variant.label().to_string())
+        (
+            e.cands.clone(),
+            popup::Mode::Zh,
+            variant.label().to_string(),
+        )
     };
 
     let shown: Vec<String> = cands.iter().take(style.max_items()).cloned().collect();
@@ -1440,6 +2176,41 @@ fn render_test(path: &str, input: &str, style: &popup::Style, variant: zh::Varia
     }
 }
 
+/// Slint 候选条渲染探针：用 Slint 软件渲染器画一条候选并写 BMP，供肉眼校验。
+/// scale 参数用于验证 HiDPI 缩放（逻辑布局不变，输出物理像素按比例放大）。
+/// 形态/主题跟随命令行 --popup / --popup-cols / --theme。
+fn ui_probe(path: &str, input: &str, scale: f32, style: &popup::Style) {
+    dict::init();
+    let mut e = Engine::new();
+    for c in input.chars() {
+        e.push_char(c);
+    }
+    let cands: Vec<String> = e.cands.iter().take(style.max_items()).cloned().collect();
+    if cands.is_empty() {
+        eprintln!("无候选");
+        std::process::exit(1);
+    }
+    let mut ui = match ui_slint::SlintUi::new(scale, style) {
+        Some(u) => u,
+        None => {
+            eprintln!("Slint 平台初始化失败（可能测试进程里已有平台）");
+            std::process::exit(1);
+        }
+    };
+    let (w, h) = ui.render(&cands);
+    match ui.write_bmp(path, true) {
+        Ok(()) => println!(
+            "已写出 {path}  {w}x{h} 物理像素 (scale={:.2}, Slint 软件渲染)  形态 {}（{} 列）  主题 {}  候选 {} 条",
+            ui.scale(),
+            style.layout.name(),
+            style.cols,
+            style.theme.name.as_str(),
+            cands.len()
+        ),
+        Err(e) => eprintln!("写 BMP 失败: {e}"),
+    }
+}
+
 /// 解码性能：与 C 版同口径（每组 2000 次，含逐键重算）
 fn bench(variant: zh::Variant) {
     use std::time::Instant;
@@ -1458,8 +2229,14 @@ fn bench(variant: zh::Variant) {
     let t0 = Instant::now();
     let mut e = Engine::new();
     e.set_variant(variant);
-    println!("首次载入词库（含一次引擎构造）: {:.2} ms", t0.elapsed().as_secs_f64() * 1000.0);
-    println!("输出形态: {}（繁体会在候选输出环节多做一次查表转换）", variant.label());
+    println!(
+        "首次载入词库（含一次引擎构造）: {:.2} ms",
+        t0.elapsed().as_secs_f64() * 1000.0
+    );
+    println!(
+        "输出形态: {}（繁体会在候选输出环节多做一次查表转换）",
+        variant.label()
+    );
 
     for case in cases {
         // 长串单次成本高，按长度收敛迭代次数，避免基准自己跑不完
@@ -1622,10 +2399,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 简繁切换按键判定() {
+    fn simplified_traditional_toggle_key() {
         let both = keymap::MASK_CONTROL | keymap::MASK_SHIFT;
         assert!(is_variant_toggle(b'f' as u32, both));
-        assert!(is_variant_toggle(b'F' as u32, both), "Shift 生效后 sym 是大写 F");
+        assert!(
+            is_variant_toggle(b'F' as u32, both),
+            "Shift 生效后 sym 是大写 F"
+        );
         // 缺一个修饰键就不该触发，否则单按 f 会误切形态
         assert!(!is_variant_toggle(b'f' as u32, keymap::MASK_CONTROL));
         assert!(!is_variant_toggle(b'f' as u32, keymap::MASK_SHIFT));
@@ -1637,7 +2417,7 @@ mod tests {
     }
 
     #[test]
-    fn shift键码判定() {
+    fn shift_keycode() {
         // evdev：左 Shift 42、右 Shift 54
         assert!(is_shift_key(42));
         assert!(is_shift_key(54));
@@ -1647,9 +2427,13 @@ mod tests {
     }
 
     #[test]
-    fn 英文字母保留大小写_拼音统一小写() {
+    fn ascii_keeps_case_pinyin_lowercased() {
         assert_eq!(letter_keep_case(b'a' as u32), Some('a'));
-        assert_eq!(letter_keep_case(b'A' as u32), Some('A'), "英文要大写就得上大写");
+        assert_eq!(
+            letter_keep_case(b'A' as u32),
+            Some('A'),
+            "英文要大写就得上大写"
+        );
         assert_eq!(letter_keep_case(b'1' as u32), None);
         assert_eq!(letter_keep_case(b' ' as u32), None);
         // 拼音不需要大小写，走另一条路径

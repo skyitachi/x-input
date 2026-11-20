@@ -1,5 +1,7 @@
 # xime（Rust 版）
 
+> **分支说明**：`feat/slint-ui` 分支把候选窗 UI 换成了 Slint 软件渲染，**放弃了「零动态依赖」前提**（体积 9MB→16MB）。协议层与引擎不变。详见 `../docs/slint-ui.md`。本 README 描述的是 master 的手写软光栅版本。
+
 Wayland 原生的中文拼音输入法（含英文前缀补全），纯 Rust 实现，**单个静态二进制、零动态依赖、零系统接线**（不注入任何进程、不需要环境变量；输入法自身的配置界面是另一回事，见下）。
 
 同一方案先前有一个 C 版本。Rust 版不是把 C 代码翻译一遍，而是换了两个关键决策，
@@ -45,16 +47,33 @@ $ ldd xime
 
 ## 二、能力边界
 
-中英两种输入走的是同一条 `zwp_input_method_v2` 链路，切换只改输入法内部状态，
-所以下表对两种模式都成立。
+中英两种输入走的是同一条 Wayland 输入法链路，切换只改输入法内部状态，
+所以下表对两种模式都成立。协议有两套前端：wlroots 系用 `zwp_input_method_v2`，
+KWin 用 `zwp_input_method_v1`（`--frontend auto` 自动识别），引擎与候选窗完全共用。
 
 | 合成器 | 支持 | 说明 |
 |---|---|---|
-| KDE Plasma (KWin) | ✅ | 需由 KWin 拉起；`xime-setup` 自动写 `/etc/xdg/kwinrc` |
-| sway / Hyprland / labwc | ✅ | 直接作为普通客户端运行 |
-| GTK3 / GTK4 / Qt / Electron 应用 | ✅ | 走 `zwp_text_input_v3`，不需要注入 `GTK_IM_MODULE` |
+| KDE Plasma (KWin) | ✅ | 走 `zwp_input_method_v1`；必须由 KWin 拉起（写 `kwinrc` 的 `InputMethod`，值必须是 `.desktop`）；`xime-setup` 自动接线 |
+| sway / Hyprland / labwc | ✅ | 直接作为普通客户端运行（`zwp_input_method_v2`） |
+| GTK3 / GTK4 / Qt / Electron 应用 | ✅ | 走 `zwp_text_input_v3`，不需要注入 `GTK_IM_MODULE`；**但必须没有** `QT_IM_MODULE`/`GTK_IM_MODULE`（见下） |
 | GNOME (Mutter) | ❌ | Mutter 没实现 `zwp_input_method_v2`，任何非框架输入法都不可用 |
-| XWayland 应用 / xterm | ❌ | 不在协议覆盖范围内（要用只能走 XIM，那是框架的路子） |
+| XWayland 应用 / xterm | ❌ | 不在协议覆盖范围内（要用只能走 XIM，那是框架的路子；KDE 上同理，KWin 只为 wl_surface 建上下文） |
+
+### KDE 上唯一的隐性前提：别设 `QT_IM_MODULE`
+
+KDE（Plasma 6 / KWin 6.6）下 xime 是 `zwp_input_method_v1` 的一端，文字由 KWin 转给
+应用。只要会话里存在下面任意一个变量，Qt/GTK 应用就会改走 fcitx 的 DBus 模块，
+**根本不创建 `zwp_text_input_v3`**，KWin 也就不为它建输入法上下文：
+
+```sh
+QT_IM_MODULE=fcitx        # 有它 → 应用里只能打出英文字母，xime 日志一行都没有
+GTK_IM_MODULE=fcitx
+XMODIFIERS=@im=fcitx
+```
+
+`xime-setup` 会把这几行注释掉（保留 `*.xime-backup`），改完**需要重新登录一次**。
+完整的 KDE 接入说明、两个会让连接当场断掉的协议签名坑、以及 XWayland 的局限，
+见 [`docs/kde-input-method-v1.md`](docs/kde-input-method-v1.md)。
 
 终端能不能用，只看一件事：**它有没有实现 `zwp_text_input_v3`**。实现了就和普通
 Wayland 应用一样，不需要额外适配。
@@ -114,6 +133,13 @@ xime --dbus --verbose     # 需要先停掉 fcitx5，服务名唯一
 | GNOME Wayland | ❌ Mutter 无该协议 | ✅ GTK / Qt 应用可用 |
 | X11 会话 / XWayland 应用 | ❌ | ✅ |
 | 微信 / WPS / Electron | ❌ | ✅ **已实测** |
+
+KDE 那格的「Wayland 前端 ✅」指的是 `zwp_input_method_v1`：xime 已实现这个前端，
+由 KWin 拉起、`--frontend auto` 自动识别，Wayland 应用全功能可用；但 KWin 只为
+`wl_surface` 建输入法上下文，**XWayland 应用（微信/WPS）仍然只能用 `--dbus`**。
+
+而且两条路的前提互斥：Wayland 前端要求会话里**没有** `QT_IM_MODULE=fcitx`，
+`--dbus` 前端则要求**有**它。同一时间只能选一条，换路要一并改环境变量（需重新登录）。
 
 这条路有个意外的好处：候选窗**由应用自己画**（Qt 客户端恒声明
 `ClientSideInputPanel`），所以 xime 不需要 atlas、render、shm、popup 任何代码——
@@ -352,6 +378,11 @@ ok   候选窗 surface 已创建 / 键盘 grab 已建立 / 空格选中首选并
 **渲染一致性**：`--render-test` 产出的候选条与 C 版**逐字节相同**
 （`cmp` 无差异），说明软光栅、字形取样、混合、圆角与布局完全对齐。
 
+**KDE 真机（Plasma 6.6.6 / KWin 6.6.6 / Wayland）**：`zwp_input_method_v1` 前端逐项
+实测通过——候选窗贴光标、内联 preedit、空格上屏、数字选词、全角标点、退格、
+Esc 取消、不消费的键经 `ctx.key` 回注、`ctx.modifiers` 回传修饰键状态。
+清单与关键日志见 [`docs/kde-input-method-v1.md`](docs/kde-input-method-v1.md) 第六节。
+
 ---
 
 ## 六、构建与安装
@@ -447,6 +478,10 @@ xime-setup --bind        # 给切换绑个快捷键（默认 CTRL + ALT + SPACE�
 - 非 systemd 的会话：pkill 掉在跑的，直接拉起新的。
 - **KDE**：两边都归 KWin 管，切换就是改 kwinrc 的 `[Wayland] InputMethod` 并通知
   KWin 重载（`kwriteconfig6 --notify`），候选窗当场换人，不用注销。
+  KWin 6.6 对单次变更常常不重载，`xime-switch` 会自动走「先切对端再切回目标」的
+  两段式兜底确保生效；切完还会轮询进程，确认目标输入法真的起来了。
+  两边的 desktop 条目都**不带** `--dbus`——xime 已有 `zwp_input_method_v1` 前端，
+  KDE 下由 `--frontend auto` 自动选中（见 `docs/kde-input-method-v1.md`）。
 
 `xime-setup --auto` 的接线优先级：KDE 写 kwinrc → 有 systemd 用户会话且装了
 `xime.service` 就走 systemd（同时停用 fcitx5 的单元，防止登录时两者赛跑）→
@@ -673,8 +708,9 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 | 改词库要重新构建 | 词条与字形编译进二进制 | 外部词表可热加载，但新字要显示仍需重烘图集 |
 | 英文只用一万高频词 | 词表取自公开的词频统计，不含专有名词与专业术语 | 罕见词、人名、代码标识符补不出来，按回车照原样上屏即可 |
 | 英文不纠错、不预测下一词 | 刻意不做（见第六节） | 打错字不会被改正，也不会替用户补句首大写 |
-| Plasma 下必须由 KWin 拉起 | 只有 KWin 交出的那条连接才被放行绑定 `zwp_input_method_v2` | 手工 `xime &` 通常绑不上；走桌面条目或 `xime-setup` |
-| 无法在 X11/XWayland 应用里用（Wayland 前端） | 只实现 `zwp_input_method_v2`；XWayland 客户端走 XIM，xime 没有那套桥 | 改用 `xime --dbus` 可覆盖 |
+| Plasma 下必须由 KWin 拉起 | 只有 KWin 交出的那条专用连接上才看得到 `zwp_input_method_v1`（普通客户端去 registry 翻不到） | 手工 `xime &` 在 KDE 下会打印原因并以退出码 1 结束（不会静默占住单实例锁）；走桌面条目或 `xime-setup`。`kwinrc` 的 `InputMethod` 只认 `.desktop`，写裸二进制路径会被静默忽略 |
+| KDE 下切换输入法后，要先切一次焦点 | `activate` 由焦点变化驱动，KWin 不会在输入法重载瞬间补发 | 表现为「切过去直接打字没反应」，Alt+Tab 换一下窗口即恢复 |
+| 无法在 X11/XWayland 应用里用（Wayland 前端） | KWin 只为 `wl_surface` 建输入法上下文，X11 窗口没有 wl_surface；wlroots 系则是协议本身不覆盖 | 改用 `xime --dbus` 可覆盖（代价：必须保留 `QT_IM_MODULE=fcitx`，那样 Wayland 应用反过来收不到字） |
 | Qt 应用设了 `QT_IM_MODULE=fcitx` 时用不了 xime | Qt 会走 fcitx 的 DBus 平台插件，**根本不创建 `zwp_text_input_v3`**，xime 的提交无处可送 | 典型发行版（如 Omarchy）默认全局设了该变量；要用 xime 需在启动应用时清空它 |
 | 微信里用不了 xime（Wayland 前端） | 它虽是 Qt6 静态链接、确实创建 `zwp_text_input_v3`、xime 的 commit 也确实发出，但聊天框不插入文字；同样动作走 DBus 就正常，说明断在协议中继而非应用 | 改用 `xime --dbus`，已实测可打出中文（输入框实测为 `n你好`）；Wayland 前端下微信仍需走 fcitx5 |
 | 简繁只有 OpenCC `s2t` 一种口径 | 未生成 `s2tw`/`s2hk` 变体表（用词差异大，如 软件/軟體） | 台湾/香港用词习惯需另加一列转换表，接口已按 `Variant` 预留 |

@@ -13,6 +13,19 @@ pub const IFACE_SHM: &str = "wl_shm";
 pub const IFACE_SEAT: &str = "wl_seat";
 pub const IFACE_INPUT_METHOD: &str = "zwp_input_method_manager_v2";
 pub const IFACE_VIRTUAL_KEYBOARD: &str = "zwp_virtual_keyboard_manager_v1";
+/// KWin 走的旧版输入法协议：没有 manager，直接就是一个 per-seat 的输入法对象，
+/// 只在这条「由合成器拉起」的专用连接上出现（普通客户端看不到）。
+pub const IFACE_INPUT_METHOD_V1: &str = "zwp_input_method_v1";
+/// v1 的候选窗角色。v1 没有 input_popup_surface，候选窗靠它贴到光标旁边。
+pub const IFACE_INPUT_PANEL: &str = "zwp_input_panel_v1";
+pub const IFACE_OUTPUT: &str = "wl_output";
+pub const IFACE_FRACTIONAL_SCALE: &str = "wp_fractional_scale_manager_v1";
+pub const IFACE_VIEWPORTER: &str = "wp_viewporter";
+
+// --- wl_output（事件解析用，wire 格式见 wayland.xml）
+// event 3: scale(int factor) —— 整数缩放，since v2
+// --- wp_fractional_scale_v1（事件解析用）
+// event 0: preferred_scale(uint scale) —— scale × 120
 
 // --- wl_display
 pub fn get_registry(c: &mut Conn, id: u32) -> io::Result<()> {
@@ -107,6 +120,22 @@ pub fn surface_damage_buffer(c: &mut Conn, surf: u32, x: i32, y: i32, w: i32, h:
     c.send(surf, 9, Msg::new().i32(x).i32(y).i32(w).i32(h))
 }
 
+// --- wp_fractional_scale_manager_v1
+pub fn get_fractional_scale(c: &mut Conn, mgr: u32, surf: u32, id: u32) -> io::Result<()> {
+    // request 1: get_fractional_scale(id new_id, surface object)
+    c.send(mgr, 1, Msg::new().new_id(id).u32(surf))
+}
+
+// --- wp_viewporter（opcode 1: get_viewport(id new_id, surface object)）
+pub fn get_viewport(c: &mut Conn, mgr: u32, surf: u32, id: u32) -> io::Result<()> {
+    c.send(mgr, 1, Msg::new().new_id(id).u32(surf))
+}
+
+// --- wp_viewport.set_destination（opcode 2: int width, int height）
+pub fn viewport_set_destination(c: &mut Conn, vp: u32, w: i32, h: i32) -> io::Result<()> {
+    c.send(vp, 2, Msg::new().i32(w).i32(h))
+}
+
 // --- zwp_input_method_manager_v2
 pub fn im_get_input_method(c: &mut Conn, mgr: u32, seat: u32, id: u32) -> io::Result<()> {
     // request 0: get_input_method(seat object, input_method new_id)
@@ -166,4 +195,88 @@ pub fn vk_modifiers(
 ) -> io::Result<()> {
     // request 2
     c.send(vk, 2, Msg::new().u32(depressed).u32(latched).u32(locked).u32(group))
+}
+
+// ---------------------------------------------------------------- input-method v1
+//
+// KWin 6.6 只实现 v1（源码里只有 InputMethodV1Interface / InputMethodContextV1 / InputPanelV1），
+// 所以 KDE 上想不靠 fcitx5 就必须走这套。它与 v2 的差别不是「少几个函数」，是模型不同：
+//
+//    v2                                  v1
+//    get_input_method(seat) → im         registry 里直接就是 zwp_input_method_v1
+//    im.activate → grab_keyboard(v2 对象) activate 事件带一个**合成器分配的 context id**
+//    grab 的 key 事件里 keycode          grab 出来的是一个标准 wl_keyboard（keycode 一致）
+//    不消费的键走 zwp_virtual_keyboard     不消费的键走 context.key()，keycode 原样转发
+//    im.get_input_popup 做候选窗          zwp_input_panel_v1 的 overlay panel 做候选窗
+//    done 事件累加 serial                 commit_state 事件给 serial，每个请求都要带上
+//
+// 最后一条是 v1 最容易踩的坑：commit_string / preedit_string 都带 serial，
+// serial 来自 commit_state，过期会被合成器静默丢弃。
+
+// --- zwp_input_method_context_v1
+// request 0
+pub fn ctx_destroy(c: &mut Conn, ctx: u32) -> io::Result<()> {
+    c.send(ctx, 0, &Msg::new())
+}
+
+// request 1: commit_string(serial uint, text string)
+pub fn ctx_commit_string(c: &mut Conn, ctx: u32, serial: u32, text: &str) -> io::Result<()> {
+    c.send(ctx, 1, Msg::new().u32(serial).string(text))
+}
+
+// request 2: preedit_string(serial uint, text string, commit string)
+//
+// 注意第三参：wayland-protocols 的 XML 里写的是 `cursor`（int），但 **KWin 编译时
+// 用的那份 XML 里是 `commit`（string）** —— libkwin 的协议签名表就是 "uss"，
+// 按其 C++ 实现是 `preedit_string(serial, text, commit)`。发 int 会被服务端当成
+// 长度为 0 的字符串，直接报 `NULL string received on non-nullable type` 并断连接。
+// v1 前端的唯一现实目标就是 KWin，所以这里按 KWin 的 ABI 发。
+pub fn ctx_preedit(c: &mut Conn, ctx: u32, serial: u32, text: &str, commit: &str) -> io::Result<()> {
+    c.send(ctx, 2, Msg::new().u32(serial).string(text).string(commit))
+}
+
+// request 9: grab_keyboard(keyboard new_id wl_keyboard)
+// 注意这个请求**只有一个参数**（没有 serial，v1 里是唯一这样的），
+// 多塞一个 serial 会让合成器把 serial 当成 new_id，报
+// "not a valid new object id (N), message grab_keyboard"。
+// 拿到的就是标准 wl_keyboard：keymap 与 key 事件格式同 wl_keyboard。
+pub fn ctx_grab_keyboard(c: &mut Conn, ctx: u32, id: u32) -> io::Result<()> {
+    c.send(ctx, 9, Msg::new().new_id(id))
+}
+
+// request 10: key(serial uint, time uint, key uint, state uint)
+// 参数与 wl_keyboard.key 完全一致，所以「未消费的键原样还回去」不需要虚拟键盘。
+pub fn ctx_key(c: &mut Conn, ctx: u32, serial: u32, time: u32, key: u32, state: u32) -> io::Result<()> {
+    c.send(ctx, 10, Msg::new().u32(serial).u32(time).u32(key).u32(state))
+}
+
+// request 11: modifiers(serial, depressed, latched, locked, group)
+pub fn ctx_modifiers(
+    c: &mut Conn,
+    ctx: u32,
+    serial: u32,
+    depressed: u32,
+    latched: u32,
+    locked: u32,
+    group: u32,
+) -> io::Result<()> {
+    c.send(
+        ctx,
+        11,
+        Msg::new().u32(serial).u32(depressed).u32(latched).u32(locked).u32(group),
+    )
+}
+
+// --- zwp_input_panel_v1
+// request 0: get_input_panel_surface(id new_id, surface object)
+pub fn panel_get_surface(c: &mut Conn, panel: u32, surf: u32, id: u32) -> io::Result<()> {
+    c.send(panel, 0, Msg::new().new_id(id).u32(surf))
+}
+
+// --- zwp_input_panel_surface_v1
+// request 1: set_overlay_panel()
+// overlay 面板由合成器摆在光标上方，这就是 v1 里的「候选窗贴光标」。
+// （request 0 是 set_toplevel，用于整块软键盘，输入法用不上。）
+pub fn panel_set_overlay(c: &mut Conn, psurf: u32) -> io::Result<()> {
+    c.send(psurf, 1, &Msg::new())
 }

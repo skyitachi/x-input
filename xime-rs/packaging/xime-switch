@@ -12,10 +12,19 @@
 # xime 内置单实例锁，切换过程中两边的进程就算短暂重叠也不会抢席位。
 #
 # KDE 上输入法由 KWin 管理，切换 = 改 kwinrc 的 InputMethod 并通知 KWin 重载。
+# KWin 6.6 只提供 zwp_input_method_v1，xime 已实现这个前端（--frontend auto 自动
+# 识别），所以两边的 desktop 条目都**不带** --dbus，Exec 直接写二进制路径即可。
+# 详见 docs/kde-input-method-v1.md。
 
 set -eu
 
-XIME=${XIME_BIN:-/usr/bin/xime}
+XIME=${XIME_BIN:-}
+if [ -z "$XIME" ]; then
+    for _b in "${HOME}/.local/bin/xime" /usr/bin/xime /usr/local/bin/xime; do
+        [ -x "$_b" ] && { XIME=$_b; break; }
+    done
+    : "${XIME:=/usr/bin/xime}"
+fi
 FCITX=${FCITX_BIN:-/usr/bin/fcitx5}
 XIME_UNIT=xime.service
 LOG=${XDG_STATE_HOME:-${HOME}/.local/state}/xime.log
@@ -76,10 +85,11 @@ start_xime() {
         setsid -f "$XIME" >>"$LOG" 2>&1
         say "  xime 已启动（日志: $LOG）"
     fi
-    # 已知限制：微信内置了 fcitx5-qt 客户端，只认 org.fcitx.Fcitx5 的 DBus 通道；
-    # xime 目前只有 zwp_input_method_v2 前端，所以切过来后微信没有可用输入法。
-    # （DBus 前端已由 docs/fcitx5-dbus-frontend.md 验证可行，尚未实现）
-    say "  提示：微信（Linux Universal）在 xime 下没有输入法，需要中文请切回 fcitx5"
+    # 微信/WPS 这类跑在 XWayland 下的应用不在 text-input 协议覆盖范围内：
+    # 原生前端（v2/v1）都够不着它们，要用中文只能换成 --dbus 前端（见
+    # docs/fcitx5-dbus-frontend.md），代价是必须保留 QT_IM_MODULE=fcitx 之类变量，
+    # 而那样 Wayland 应用就收不到 xime 的字了（见 docs/kde-input-method-v1.md 第四节）。
+    say "  提示：微信/WPS 等 XWayland 应用需要 xime --dbus 前端，与原生前端互斥"
 }
 
 stop_xime() {
@@ -136,45 +146,112 @@ stop_fcitx5() {
 }
 
 # KDE：输入法生命周期归 KWin，切换 = 改 kwinrc 并让它重载
-kde_switch() {
-    target=$1
-    f=${KWINRC:-${HOME}/.config/kwinrc}
-    im_now=$(grep -h '^InputMethod=' "$f" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
-    case "${2:-auto}" in
-        xime) target=xime ;;
-        fcitx5) target=fcitx5 ;;
-        *)
-            case "$im_now" in
-                *xime*) target=fcitx5 ;;
-                *) target=xime ;;
-            esac
-            ;;
-    esac
-    if [ "$target" = xime ]; then
-        im=${XIME_DESKTOP:-/usr/share/applications/xime.desktop}
-        [ -f "$im" ] || im="$XIME"
-    else
-        im=$(fcitx_desktop)
-    fi
-    if [ "$im" = "$im_now" ]; then
-        say "KDE: 输入法已是 $im，无需切换"
-        return 0
-    fi
+
+# 写 InputMethod 并通知 KWin。用相对文件名 kwinrc（KConfig 在 ~/.config 下找），
+# 实测绝对路径的 --notify 有时不触发 KWin 重载。
+kde_write_im() {
+    _im=$1
+    _f=${KWINRC:-${HOME}/.config/kwinrc}
     if have kwriteconfig6; then
-        kwriteconfig6 --file "$f" --group Wayland --key InputMethod "$im" --notify
+        kwriteconfig6 --file kwinrc --group Wayland --key InputMethod "$_im" --notify
     else
         tmp=$(mktemp)
-        awk -v im="$im" '
+        awk -v im="$_im" '
             BEGIN { inw = 0; set = 0 }
             /^\[/ { if (inw && !set) { print "InputMethod=" im; set = 1 }
                     inw = ($0 == "[Wayland]"); print; next }
-            inw && /^InputMethod=/ { print "InputMethod=" im; set = 1; next }
+            inw && /^InputMethod(\[\$e\])?=/ { print "InputMethod=" im; set = 1; next }
             { print }
             END { if (inw && !set) print "InputMethod=" im }
-        ' "$f" > "$tmp" && install -m 644 "$tmp" "$f" && rm -f "$tmp"
+        ' "$_f" > "$tmp" && install -m 644 "$tmp" "$_f" && rm -f "$tmp"
     fi
+}
+
+# 读当前 InputMethod：优先用 kreadconfig6（能处理 [$e] 展开），回退直接读文件。
+kde_current_im() {
+    f=${KWINRC:-${HOME}/.config/kwinrc}
+    if have kreadconfig6; then
+        kreadconfig6 --file "$f" --group Wayland --key InputMethod 2>/dev/null || true
+    else
+        grep -hE '^InputMethod(\[\$e\])?=' "$f" 2>/dev/null | tail -n1 | sed 's/^InputMethod\(\[\$e\]\)\?=//'
+    fi
+}
+
+# 找 xime 的 desktop 文件（KDE 切换只认 .desktop，不认裸二进制路径）。
+kde_xime_desktop() {
+    for d in "${XIME_DESKTOP:-}" \
+             "${HOME}/.local/share/applications/xime.desktop" \
+             /usr/share/applications/xime.desktop; do
+        [ -n "$d" ] && [ -f "$d" ] && { printf '%s' "$d"; return 0; }
+    done
+    # 没有 desktop 就临时造一个。Exec 直接写二进制：KWin 拉起的连接上只有 v1，
+    # xime 的 --frontend auto 会自动认；带 --dbus 反而会让 Wayland 应用收不到字。
+    d="${XIME_DESKTOP:-${HOME}/.local/share/applications/xime.desktop}"
+    mkdir -p "$(dirname "$d")"
+    cat >"$d" <<EOF
+[Desktop Entry]
+Type=Application
+Name=xime
+GenericName=Input Method
+Comment=Wayland-native Chinese input method
+Exec=${XIME}
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+NoDisplay=true
+StartupNotify=false
+X-KDE-StartupNotify=false
+X-KDE-Wayland-VirtualKeyboard=true
+EOF
+    have update-desktop-database && update-desktop-database "$(dirname "$d")" >/dev/null 2>&1 || true
+    say "KDE: 已自动创建 $d（Exec=$XIME）"
+    printf '%s' "$d"
+}
+
+kde_switch() {
+    target=$1
+    f=${KWINRC:-${HOME}/.config/kwinrc}
+    im_now=$(kde_current_im)
+
+    if [ "$target" = xime ]; then
+        im=$(kde_xime_desktop)
+    else
+        im=$(fcitx_desktop)
+    fi
+
+    if [ "$im" = "$im_now" ]; then
+        say "KDE: 当前已是 $im，无需切换"
+        return 0
+    fi
+
+    # KWin 6.6 对单次 InputMethod 变更经常不重载；两段式（先切到对端再切回目标）
+    # 实测能强制它卸载旧输入法、加载新的，切换当场生效。
+    if [ "$target" = xime ]; then
+        other=$(fcitx_desktop)
+    else
+        other=$(kde_xime_desktop)
+    fi
+    kde_write_im "$other"
+    sleep 2
+    kde_write_im "$im"
     say "KDE: InputMethod → $im"
-    say "  KWin 应会即时重载；若候选窗没动静，注销重登或在系统设置 → 虚拟键盘里按一次应用。"
+
+    # 等 KWin 重载拉起目标输入法（最多 ~10 秒），让切换结果当场可见
+    i=0
+    while [ "$i" -lt 20 ]; do
+        if [ "$target" = xime ]; then
+            running xime && break
+        else
+            running fcitx5 && break
+        fi
+        i=$((i + 1))
+        sleep 0.5
+    done
+    if [ "$target" = xime ]; then
+        running xime && say "  xime 已由 KWin 拉起 ✅" || say "  ⚠ xime 未启动，可能需要注销重登"
+    else
+        running fcitx5 && say "  fcitx5 已由 KWin 拉起 ✅" || say "  ⚠ fcitx5 未启动"
+    fi
 }
 
 usage() {
@@ -204,7 +281,7 @@ d=$(printf '%s' "${XDG_CURRENT_DESKTOP:-${XDG_SESSION_DESKTOP:-}}" | tr '[:upper
 case "$d" in
     *kde*|*plasma*)
         kde_switch "$target"
-        exit 0
+        exit $?
         ;;
     *gnome*)
         if [ "$target" = xime ]; then
