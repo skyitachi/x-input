@@ -13,11 +13,16 @@ pub const KS_TAB: u32 = 0xff09;
 pub const KS_RETURN: u32 = 0xff0d;
 pub const KS_ESCAPE: u32 = 0xff1b;
 pub const KS_DELETE: u32 = 0xffff;
+/// 翻页键：`-` / `=`（fcitx5 拼音默认绑定，与 PageUp/PageDown 等价）
+pub const KS_MINUS: u32 = 0x2d;
+pub const KS_EQUAL: u32 = 0x3d;
 pub const KS_HOME: u32 = 0xff50;
 pub const KS_LEFT: u32 = 0xff51;
 pub const KS_UP: u32 = 0xff52;
 pub const KS_RIGHT: u32 = 0xff53;
 pub const KS_DOWN: u32 = 0xff54;
+pub const KS_PAGE_UP: u32 = 0xff55;
+pub const KS_PAGE_DOWN: u32 = 0xff56;
 pub const KS_END: u32 = 0xff57;
 pub const KS_SHIFT_L: u32 = 0xffe1;
 pub const KS_SHIFT_R: u32 = 0xffe2;
@@ -197,7 +202,7 @@ impl Keymap {
         }
 
         // 功能键
-        const FUNC: [(u32, u32); 18] = [
+        const FUNC: [(u32, u32); 20] = [
             (1, KS_ESCAPE),
             (14, KS_BACKSPACE),
             (15, KS_TAB),
@@ -212,6 +217,8 @@ impl Keymap {
             (106, KS_RIGHT),
             (103, KS_UP),
             (108, KS_DOWN),
+            (104, KS_PAGE_UP),
+            (109, KS_PAGE_DOWN),
             (102, KS_HOME),
             (107, KS_END),
             (111, KS_DELETE),
@@ -383,6 +390,8 @@ fn sym_value(tok: &str) -> u32 {
         "Up" => KS_UP,
         "Right" => KS_RIGHT,
         "Down" => KS_DOWN,
+        "Page_Up" => KS_PAGE_UP,
+        "Page_Down" => KS_PAGE_DOWN,
         "End" => KS_END,
         "Shift_L" => KS_SHIFT_L,
         "Shift_R" => KS_SHIFT_R,
