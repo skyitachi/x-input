@@ -1,0 +1,150 @@
+#!/bin/sh
+# xime-install - 从源码构建，并把产物装到本地前缀（开发/自用场景）。
+#
+# 为什么需要它：xime-switch 与 xime-setup 都**不负责装二进制**。
+#   - xime-switch 拉起的只是 $HOME/.local/bin/xime 这份**拷贝**；
+#   - KDE 下更绕：kwinrc 的 InputMethod 指向 xime.desktop，其 Exec 写死了同一个路径。
+# 于是「cargo build 出来的 target/release/xime」和「实际在跑的那份」是两条互不相干
+# 的线，只要漏掉一次拷贝，就会静默地一直跑旧版，而且没有任何报错。本脚本把
+# 「构建 → 安装 → 校验」合成一条命令，装完顺手比对哈希与版本。
+#
+#   xime-install                  构建 release 并装到 ~/.local/bin
+#   xime-install --no-build       跳过构建，只装现成的 target/release/xime
+#   xime-install --prefix /usr    装到 /usr/bin（需要写权限，通常配合 sudo）
+#   xime-install --fix-desktop    顺手把 xime.desktop 的 Exec 改成本次安装路径
+#   xime-install --dry-run        只打印计划，不动文件
+#
+# 装完若 xime 正在运行，需用 xime-switch 重切一次：进程跑的是已加载的旧映射，
+# 原地替换文件不会让它换代码。
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+PREFIX=${PREFIX:-${HOME}/.local}
+BINDIR="$PREFIX/bin"
+BUILT="target/release/xime"
+DESKTOP="${XIME_DESKTOP:-${HOME}/.local/share/applications/xime.desktop}"
+
+do_build=1
+dry=0
+fix_desktop=0
+
+say() { printf '%s\n' "$*"; }
+run() {
+    if [ "$dry" -eq 1 ]; then
+        printf '[dry-run] %s\n' "$*"
+    else
+        "$@"
+    fi
+}
+
+usage() {
+    cat <<EOF
+用法: xime-install [--no-build] [--prefix DIR] [--fix-desktop] [--dry-run]
+
+  --no-build     不构建，直接安装现有的 $BUILT
+  --prefix DIR   安装前缀（默认 $PREFIX，二进制落到 DIR/bin）
+  --fix-desktop  若 $DESKTOP 存在且 Exec 与本次安装路径不一致，改写它
+  --dry-run      只打印计划
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-build) do_build=0 ;;
+        --prefix)
+            shift
+            [ $# -gt 0 ] || { say "--prefix 需要参数" >&2; exit 2; }
+            PREFIX=$1
+            BINDIR="$PREFIX/bin"
+            ;;
+        --prefix=*)
+            PREFIX=${1#--prefix=}
+            BINDIR="$PREFIX/bin"
+            ;;
+        --fix-desktop) fix_desktop=1 ;;
+        --dry-run) dry=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) say "未知参数: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+cd "$root"
+
+# ---------------------------------------------------------------- 构建
+if [ "$do_build" -eq 1 ]; then
+    command -v cargo >/dev/null 2>&1 || {
+        say "找不到 cargo；装 Rust 工具链，或用 --no-build 跳过构建" >&2
+        exit 1
+    }
+    say "构建 release ..."
+    run cargo build --release
+fi
+
+[ -f "$BUILT" ] || {
+    say "缺少 $BUILT；去掉 --no-build 让脚本先构建" >&2
+    exit 1
+}
+
+# ---------------------------------------------------------------- 安装
+if [ ! -d "$BINDIR" ]; then
+    run mkdir -p "$BINDIR"
+fi
+if [ ! -w "$BINDIR" ]; then
+    say "$BINDIR 不可写；装系统目录请用 sudo，或换 --prefix" >&2
+    exit 1
+fi
+
+say "安装到 $BINDIR ..."
+run install -m 755 "$BUILT" "$BINDIR/xime"
+
+# 两个脚本与二进制必须同源：xime-switch 认路径、xime-setup 写 .desktop 的 Exec，
+# 版本错开会出现「切换成功但 Exec 指向别处」这类难查的错位。
+for s in xime-setup xime-switch; do
+    if [ -f "packaging/$s" ]; then
+        run install -m 755 "packaging/$s" "$BINDIR/$s"
+    fi
+done
+
+if [ "$dry" -eq 1 ]; then
+    say "（dry-run，未改动任何文件）"
+    exit 0
+fi
+
+# ---------------------------------------------------------------- 校验
+inst="$BINDIR/xime"
+say ""
+say "校验："
+printf '  %-28s %s\n' "已安装" "$(md5sum "$inst" | cut -d' ' -f1)"
+printf '  %-28s %s\n' "构建产物" "$(md5sum "$BUILT" | cut -d' ' -f1)"
+printf '  %-28s %s\n' "版本" "$("$inst" --version 2>&1 | head -n1)"
+
+# ---------------------------------------------------------------- 路径一致性
+# KDE 只认 .desktop，且 Exec 是绝对路径：安装前缀换过就会新旧路径并存，
+# 表现为「重装完还是旧版」。这里直接把错位指出来。
+if [ -f "$DESKTOP" ]; then
+    exec_line=$(sed -n 's/^Exec=//p' "$DESKTOP" | head -n1)
+    if [ "$exec_line" != "$inst" ]; then
+        say ""
+        say "⚠ $DESKTOP 的 Exec 指向 $exec_line"
+        say "  与本次安装路径 $inst 不一致；KWin 会按 .desktop 拉起，等于仍跑旧位置那份。"
+        if [ "$fix_desktop" -eq 1 ]; then
+            tmp=$(mktemp)
+            sed "s|^Exec=.*|Exec=$inst|" "$DESKTOP" > "$tmp" && install -m 644 "$tmp" "$DESKTOP"
+            rm -f "$tmp"
+            say "  已改写为 Exec=$inst"
+        else
+            say "  加 --fix-desktop 可自动改写。"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------- 生效提醒
+if pgrep -x xime >/dev/null 2>&1; then
+    say ""
+    say "xime 正在运行（pid $(pgrep -x xime | tr '\n' ' ')）——它跑的还是旧代码。"
+    say "执行 xime-switch fcitx5 再 xime-switch xime 让 KWin 重新拉起，才会换成新二进制。"
+fi
+
+say ""
+say "完成。"
