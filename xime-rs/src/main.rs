@@ -923,7 +923,7 @@ impl Xime {
         match sym {
             // 翻页：上一页 -/PageUp、下一页 =/PageDown。边界不循环，越界时吞键不动作
             // （与 fcitx5 一致，不把 -/= 漏给应用）。无组字时透传。
-            keymap::KS_MINUS | keymap::KS_PAGE_UP => {
+            keymap::KS_MINUS | keymap::KS_PAGE_UP | keymap::KS_UP => {
                 if self.engine.active() && self.page > 0 {
                     self.page -= 1;
                     self.refresh()?;
@@ -934,7 +934,7 @@ impl Xime {
                 }
                 self.forward_key(time, key, state)?;
             }
-            keymap::KS_EQUAL | keymap::KS_PAGE_DOWN => {
+            keymap::KS_EQUAL | keymap::KS_PAGE_DOWN | keymap::KS_DOWN => {
                 let page_size = self.style.max_items();
                 if self.engine.active() && (self.page + 1) * page_size < self.engine.cands.len() {
                     self.page += 1;
@@ -1453,11 +1453,13 @@ impl Xime {
         if shown.is_empty() {
             return self.popup_hide();
         }
+        let has_prev = self.page > 0;
+        let has_next = end < cands.len();
 
         // 渲染来源：Slint 布局 + 软件光栅（默认），或手写 Canvas（--legacy-ui）。
         // 两条路产出都是 ARGB8888 像素 + 尺寸，后面的 shm 上传流程完全相同。
         let (w, h, pixels): (i32, i32, Vec<u32>) = if let Some(ui) = self.slint_ui.as_mut() {
-            let (w, h) = ui.render(&shown);
+            let (w, h) = ui.render(&shown, has_prev, has_next);
             if w <= 0 || h <= 0 {
                 return self.popup_hide();
             }
@@ -2249,6 +2251,8 @@ fn ui_probe(path: &str, input: &str, scale: f32, page: usize, style: &popup::Sty
         eprintln!("无候选");
         std::process::exit(1);
     }
+    let has_prev = page > 0;
+    let has_next = end < e.cands.len();
     let mut ui = match ui_slint::SlintUi::new(scale, style) {
         Some(u) => u,
         None => {
@@ -2256,7 +2260,7 @@ fn ui_probe(path: &str, input: &str, scale: f32, page: usize, style: &popup::Sty
             std::process::exit(1);
         }
     };
-    let (w, h) = ui.render(&cands);
+    let (w, h) = ui.render(&cands, has_prev, has_next);
     match ui.write_bmp(path, true) {
         Ok(()) => println!(
             "已写出 {path}  {w}x{h} 物理像素 (scale={:.2}, Slint 软件渲染)  形态 {}（{} 列）  主题 {}  候选 {} 条",

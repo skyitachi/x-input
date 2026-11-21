@@ -48,6 +48,15 @@ impl Platform for SlintPlatform {
     }
 }
 
+/// 预乘 ARGB8888 整体按 f/255 缩放 alpha 与 RGB（保持预乘一致性）。
+fn dim_alpha(pm: u32, f: u32) -> u32 {
+    let a = ((pm >> 24) & 0xFF) * f / 255;
+    let r = ((pm >> 16) & 0xFF) * f / 255;
+    let g = ((pm >> 8) & 0xFF) * f / 255;
+    let b = (pm & 0xFF) * f / 255;
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
 /// 预乘 ARGB8888（config 内部表示）→ Slint 颜色（反预乘回直通 alpha）。
 fn to_slint_color(pm: u32) -> slint::Color {
     let a = ((pm >> 24) & 0xFF) as u32;
@@ -81,6 +90,9 @@ fn write_style(ui: &CandidateBar, style: &Style, layout: Layout, cols: i32) {
     theme.set_hint(to_slint_color(c.text));
     theme.set_sel_bg(to_slint_color(c.accent));
     theme.set_sel_text(to_slint_color(c.sel_text));
+    // 翻页箭头：文字色的 45% 不透明度（预乘 alpha 整体缩放），弱化但随主题明暗自适应。
+    // 比 border 更清晰、比 text 更淡，作「还能翻页」的提示不喧宾夺主。
+    theme.set_arrow(to_slint_color(dim_alpha(c.text, 115)));
 
     theme.set_radius(m.radius as f32);
     theme.set_pad_x(m.pad_x as f32);
@@ -180,7 +192,9 @@ impl SlintUi {
     }
 
     /// 更新候选并渲染一帧，返回内容区实际尺寸（物理像素，已裁掉透明留白）。
-    pub fn render(&mut self, cands: &[String]) -> (i32, i32) {
+    pub fn render(&mut self, cands: &[String], has_prev: bool, has_next: bool) -> (i32, i32) {
+        self.ui.set_has_prev(has_prev);
+        self.ui.set_has_next(has_next);
         match self.layout {
             Layout::Horizontal | Layout::Vertical => {
                 let model: Vec<SharedString> =

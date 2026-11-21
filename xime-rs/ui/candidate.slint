@@ -17,6 +17,8 @@ export global Theme {
     in-out property <color> border: #3a3a3a;
     in-out property <color> text: #e8e8e8;
     in-out property <color> hint: #8f8f8f;
+    // 翻页箭头：弱化灰，比候选更淡，只作「还能翻页」的提示
+    in-out property <color> arrow: #9aa0a6;
     in-out property <color> sel-bg: #2f6fbf;
     in-out property <color> sel-text: #ffffff;
 
@@ -76,6 +78,9 @@ export component CandidateBar inherits Window {
     in property <[[string]]> rows: [];
     in-out property <Layout> layout: Layout.horizontal;
     in property <int> cols: 3;
+    // 翻页提示：有上一页/下一页时在候选列表两端显示箭头
+    in property <bool> has-prev: false;
+    in property <bool> has-next: false;
 
     background: transparent;
 
@@ -96,11 +101,23 @@ export component CandidateBar inherits Window {
             padding-bottom: Theme.pad-y;
             spacing: Theme.item-gap;
 
+            if has-prev : Text {
+                text: "‹";
+                color: Theme.arrow;
+                font-size: Theme.font-size - 2px;
+                vertical-alignment: center;
+            }
             for c[i] in candidates : Chip {
                 index: i + 1;
                 label: c;
                 selected: i == 0;
                 with-dot: true;
+            }
+            if has-next : Text {
+                text: "›";
+                color: Theme.arrow;
+                font-size: Theme.font-size - 2px;
+                vertical-alignment: center;
             }
         }
     }
@@ -122,11 +139,23 @@ export component CandidateBar inherits Window {
             padding-bottom: Theme.pad-y;
             spacing: Theme.row-gap;
 
+            if has-prev : Text {
+                text: "‹";
+                color: Theme.arrow;
+                font-size: Theme.font-size - 2px;
+                horizontal-alignment: center;
+            }
             for c[i] in candidates : Chip {
                 index: i + 1;
                 label: c;
                 selected: i == 0;
                 with-dot: true;
+            }
+            if has-next : Text {
+                text: "›";
+                color: Theme.arrow;
+                font-size: Theme.font-size - 2px;
+                horizontal-alignment: center;
             }
         }
     }
@@ -148,6 +177,12 @@ export component CandidateBar inherits Window {
             padding-bottom: Theme.pad-y;
             spacing: Theme.row-gap;
 
+            if has-prev : Text {
+                text: "‹";
+                color: Theme.arrow;
+                font-size: Theme.font-size - 2px;
+                horizontal-alignment: center;
+            }
             for row[i] in rows : HorizontalLayout {
                 spacing: Theme.item-gap;
 
@@ -157,6 +192,12 @@ export component CandidateBar inherits Window {
                     selected: i == 0 && j == 0;
                     with-dot: false;
                 }
+            }
+            if has-next : Text {
+                text: "›";
+                color: Theme.arrow;
+                font-size: Theme.font-size - 2px;
+                horizontal-alignment: center;
             }
         }
     }
