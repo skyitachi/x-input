@@ -8,6 +8,7 @@
 //! 代价：每个词 = log10(总词频) - log10(词频)。一个词只付一次常数项，
 //! 因此长词天然优于逐字拼，符合汉语构词习惯。
 
+use crate::bigram;
 use crate::dict;
 use crate::zh::{self, Variant};
 
@@ -19,9 +20,10 @@ const BEST: usize = 27; // 每个位置保留几条路径（决定候选总数�
 const EDGES: usize = 96; // 每个位置最多几条边
 const MAX_KEY: usize = 32; // 词条拼音键最长字节数
 
-/// 词频总和的对数，相当于"每多切一个词就多付一次"的常数项。
-/// 词频是概率乘以 1e9，所以理论上取 9；再大一点是为了补偿纯 unigram 模型
-/// 缺少上下文约束——否则「你/号」这种高频单字拼接会压过「你好」这种整词。
+/// 词频总和的对数（9，词频 = 概率×1e9 的归一化项）+ 插入惩罚（1，每多切一个词
+/// 多付一次，让整词天然优于逐字拼）。上下文消歧改由 bigram 转移项承担
+/// （见 `bigram::trans_cost`），但插入惩罚这部分 bigram 替代不了——PMI 只衡量
+/// 「搭配是否更常见」，不衡量「该不该多切一个词」。所以保持 10 而非降到 9。
 const LOG_TOTAL: f32 = 10.0;
 /// 补全未输完的尾部音节：按"缺一个音节"计固定惩罚，再按缺字数量轻微递增，
 /// 否则输入 "n" 时「中国」会因为词频高而排在「你」前面。
@@ -29,11 +31,17 @@ const PARTIAL_BASE: f32 = 2.0;
 const PARTIAL_SLOPE: f32 = 0.7;
 /// 简拼（nh -> 你好）的惩罚，保证全拼结果优先
 const INITIALS_PENALTY: f32 = 2.0;
+/// bigram 转移代价的权重。PMI 对低频词（如「妳」，10 万次）会因统计稀疏而给出
+/// 过大的奖励，压过 word_cost 的整词偏好；乘以 <1 的系数压低其影响，让 unigram
+/// 主导排序、bigram 只做微调。
+const TRANS_WEIGHT: f32 = 0.4;
 
 struct Edge {
     to: usize,
     cost: f32,
     val: &'static str,
+    /// 该候选词的词形 id（val_id），供 bigram 转移代价查询
+    val_id: u32,
 }
 
 pub struct Engine {
@@ -43,7 +51,8 @@ pub struct Engine {
     /// 各候选的解码代价，越小越可信（调试用）
     pub cost: Vec<f32>,
     /// 每个输入位置上的 N 条最优路径。跨次重算复用，避免每次按键都重新分配。
-    paths: Vec<Vec<(f32, String)>>,
+    /// 第三维是路径末词的 val_id（句首为 u32::MAX 哨兵），供 bigram 转移代价查询。
+    paths: Vec<Vec<(f32, String, u32)>>,
     /// 当前位置的出边缓冲，复用
     edges: Vec<Edge>,
     /// 词库查表结果缓冲，复用
@@ -144,7 +153,7 @@ impl Engine {
         for p in self.paths.iter_mut().take(len + 1) {
             p.clear();
         }
-        self.paths[0].push((0.0, String::new()));
+        self.paths[0].push((0.0, String::new(), u32::MAX));
 
         // 前向 N-best：所有边都从已到达的位置向右延伸，按 i 递增扫描即拓扑序
         for i in 0..len {
@@ -159,15 +168,21 @@ impl Engine {
             // 这样不必克隆 paths[i]，也不触发借用冲突。
             let (left, right) = self.paths.split_at_mut(i + 1);
             let cur = &left[i];
-            for (pcost, ptext) in cur.iter() {
+            for (pcost, ptext, plast) in cur.iter() {
                 for e in self.edges.iter() {
                     let slot = &mut right[e.to - (i + 1)];
-                    push_path(slot, ptext, e.val, pcost + e.cost);
+                    push_path(
+                        slot,
+                        ptext,
+                        e.val,
+                        pcost + e.cost + TRANS_WEIGHT * bigram::trans_cost(*plast, e.val_id),
+                        e.val_id,
+                    );
                 }
             }
         }
 
-        for (c, t) in self.paths[len].iter() {
+        for (c, t, _) in self.paths[len].iter() {
             if self.cands.len() >= CAND_MAX {
                 break;
             }
@@ -199,7 +214,7 @@ impl Engine {
             let Some(sub) = self.input.get(i..i + l) else { continue };
             dict::exact_into(sub, HITS, self.variant, &mut self.hits);
             for h in &self.hits {
-                self.edges.push(Edge { to: i + l, cost: word_cost(h.freq), val: h.val });
+                self.edges.push(Edge { to: i + l, cost: word_cost(h.freq), val: h.val, val_id: h.val_id });
             }
         }
 
@@ -212,6 +227,7 @@ impl Engine {
                     to: i + l,
                     cost: word_cost(h.freq) + INITIALS_PENALTY,
                     val: h.val,
+                    val_id: h.val_id,
                 });
             }
         }
@@ -226,6 +242,7 @@ impl Engine {
                     to: len,
                     cost: word_cost(h.freq) + PARTIAL_BASE + PARTIAL_SLOPE * (extra - 1.0),
                     val: h.val,
+                    val_id: h.val_id,
                 });
             }
         }
@@ -244,21 +261,23 @@ fn word_cost(freq: u32) -> f32 {
 ///
 /// 先按代价剪枝再拼接文本：绝大多数 (路径, 边) 组合进不了前 6 名，
 /// 省掉这些拼接是热路径上最大的一笔开销。
-fn push_path(list: &mut Vec<(f32, String)>, a: &str, b: &str, cost: f32) {
+fn push_path(list: &mut Vec<(f32, String, u32)>, a: &str, b: &str, cost: f32, val_id: u32) {
     if list.len() >= BEST && cost >= list[list.len() - 1].0 {
         return;
     }
     let mut text = String::with_capacity(a.len() + b.len());
     text.push_str(a);
     text.push_str(b);
-    if list.iter().any(|(_, t)| t == &text) {
+    // 按 (text, 末词 val_id) 去重：同一 text 不同末词（整词 vs 逐字切分）
+    // 后续转移不同，必须都保留，否则 bigram 的上下文区分会被 text 去重吃掉。
+    if list.iter().any(|(_, t, v)| t == &text && *v == val_id) {
         return;
     }
     if list.len() >= BEST {
         list.pop();
     }
-    let idx = list.iter().position(|(c, _)| cost < *c).unwrap_or(list.len());
-    list.insert(idx, (cost, text));
+    let idx = list.iter().position(|(c, _, _)| cost < *c).unwrap_or(list.len());
+    list.insert(idx, (cost, text, val_id));
 }
 
 /// 解析 "u4f60" 形式的码位直输
@@ -321,6 +340,16 @@ mod tests {
         assert_eq!(top("woshiyigexuesheng"), "我是一个学生");
         assert_eq!(top("jintiantianqihenhao"), "今天天气很好");
         assert_eq!(top("zhonghuarenmingongheguo"), "中华人民共和国");
+    }
+
+    /// bigram 的上下文消歧：这些用例靠 unigram 词频无法区分，
+    /// 必须靠「前词 → 当前词」的转移概率才能选对。
+    #[test]
+    fn context_disambiguation() {
+        assert_eq!(top("daodazhongdian"), "到达终点");
+        assert_eq!(top("shijianzhongdian"), "时间重点");
+        assert_eq!(top("womenyihui"), "我们一会");
+        assert_eq!(top("dalianrenmin"), "大连人民");
     }
 
     #[test]

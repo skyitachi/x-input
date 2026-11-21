@@ -55,6 +55,8 @@ xime-rs/tools/uinput-inject
 #   xime-rs/data/dict.bin        4.3MB，include_bytes! 编进二进制
 #   xime-rs/data/atlas.bin       2.4MB，同上（7536 字形，含繁体用字）
 #   xime-rs/data/zh.bin          97KB，简繁转换表，同上
+#   xime-rs/data/bigram.bin      6.6MB，二元语言模型转移表（PMI），mkbigram.py 生成
+#   xime-rs/data/val_map.bin     571KB，词条 id -> 词形 id 映射，同上
 #   xime-rs/data/hant-chars.txt  繁体字符集，重新烘焙字形时作为 mkfont 第 4 参数
 #   xime-rs/dist/*.png           README 里引用的候选窗样本
 #   wayland-ime/docs/candidate-bar.bmp  README 里引用的候选条截图

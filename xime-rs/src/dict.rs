@@ -10,8 +10,11 @@ use crate::zh::{self, Variant};
 use std::sync::OnceLock;
 
 static RAW: &[u8] = include_bytes!("../data/dict.bin");
+/// 词条 id -> 词形 id（val_id）映射，供 bigram 转移表按「词形」查转移代价。
+static VAL_RAW: &[u8] = include_bytes!("../data/val_map.bin");
 
 const MAGIC: &[u8; 8] = b"XIMEIM01";
+const VAL_MAGIC: &[u8; 8] = b"XIMEVM01";
 const HDR: usize = 32;
 const WORD_SIZE: usize = 12;
 const INI_SIZE: usize = 8;
@@ -38,6 +41,8 @@ pub struct Tables {
     _syl: &'static [u8],
     pub word_count: usize,
     pub ini_count: usize,
+    /// 词条 id -> val_id（词形 id）。数据未生成时为 empty，val_id() 返回哨兵。
+    val_map: &'static [u32],
 }
 
 impl Tables {
@@ -62,7 +67,16 @@ impl Tables {
         off += ibl;
         let syl = &RAW[off..off + sl];
 
-        Tables { words, blob, ini, ini_blob, _syl: syl, word_count: wc, ini_count: ic }
+        Tables {
+            words,
+            blob,
+            ini,
+            ini_blob,
+            _syl: syl,
+            word_count: wc,
+            ini_count: ic,
+            val_map: parse_val_map(),
+        }
     }
 
     #[inline]
@@ -134,6 +148,23 @@ impl Tables {
     }
 }
 
+/// 解析 val_map.bin：词条 id -> val_id。文件缺失/不完整时返回空 slice，
+/// 此时 val_id() 对任意 word_id 返回哨兵 u32::MAX（无转移，退化回 unigram）。
+fn parse_val_map() -> &'static [u32] {
+    if VAL_RAW.len() < 32 || &VAL_RAW[0..8] != VAL_MAGIC {
+        return &[];
+    }
+    let n = rd32(VAL_RAW, 8) as usize;
+    if 32 + n * 4 > VAL_RAW.len() {
+        return &[];
+    }
+    let mut v = Vec::with_capacity(n);
+    for i in 0..n {
+        v.push(rd32(VAL_RAW, 32 + i * 4));
+    }
+    Box::leak(v.into_boxed_slice())
+}
+
 /// 比较 key 与查询串 p：0 表示 key 以 p 开头；<0 表示 key 字典序更小
 #[inline]
 fn cmp_prefix(key: &str, p: &[u8]) -> i32 {
@@ -158,6 +189,8 @@ pub struct Hit {
     pub key_len: usize,
     /// 当前输出形态下是否可见（简体模式下隐藏繁体形词条）
     pub keep: bool,
+    /// 词形 id（val_id），供 bigram 转移表查转移代价；用户词表条目为哨兵 u32::MAX
+    pub val_id: u32,
 }
 
 /// 保持按词频降序、按候选串去重、最多 cap 条
@@ -272,6 +305,7 @@ pub fn exact_into(p: &str, cap: usize, variant: Variant, out: &mut Vec<Hit>) {
                     freq: t.freq(i),
                     key_len: plen,
                     keep: zh::keep_entry(i, variant),
+                    val_id: t.val_map.get(i).copied().unwrap_or(u32::MAX),
                 },
             );
             if out.len() == cap {
@@ -283,7 +317,7 @@ pub fn exact_into(p: &str, cap: usize, variant: Variant, out: &mut Vec<Hit>) {
     for u in users() {
         if u.key == p {
             // 用户词表由用户自己写，不做简繁分类
-            push_hit(out, cap, Hit { val: u.val, freq: u.freq, key_len: plen, keep: true });
+            push_hit(out, cap, Hit { val: u.val, freq: u.freq, key_len: plen, keep: true, val_id: u32::MAX });
         }
     }
 }
@@ -316,6 +350,7 @@ pub fn prefix_into(p: &str, max_extra: usize, cap: usize, variant: Variant, out:
                 freq: t.freq(i),
                 key_len: kl,
                 keep: zh::keep_entry(i, variant),
+                val_id: t.val_map.get(i).copied().unwrap_or(u32::MAX),
             },
         );
         i += 1;
@@ -323,7 +358,7 @@ pub fn prefix_into(p: &str, max_extra: usize, cap: usize, variant: Variant, out:
     for u in users() {
         let kl = u.key.len();
         if kl > p.len() && kl - p.len() <= max_extra && u.key.starts_with(p) {
-            push_hit(out, cap, Hit { val: u.val, freq: u.freq, key_len: kl, keep: true });
+            push_hit(out, cap, Hit { val: u.val, freq: u.freq, key_len: kl, keep: true, val_id: u32::MAX });
         }
     }
 }
@@ -350,6 +385,7 @@ pub fn initials_into(s: &str, cap: usize, variant: Variant, out: &mut Vec<Hit>) 
                         freq: t.freq(wid),
                         key_len: s.len(),
                         keep: zh::keep_entry(wid, variant),
+                        val_id: t.val_map.get(wid).copied().unwrap_or(u32::MAX),
                     },
                 );
             }

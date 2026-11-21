@@ -1,3 +1,4 @@
+mod bigram;
 mod config;
 mod dict;
 mod en;

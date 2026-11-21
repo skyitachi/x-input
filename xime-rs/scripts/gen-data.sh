@@ -26,6 +26,18 @@ python3 "$here/scripts/gen-zh.py"
 echo "  英文 -> data/en.bin"
 python3 "$here/scripts/gen-en.py"
 
+# 二元语言模型转移表：需要中文句子语料（scripts/fetch-corpus.sh 下载、
+# scripts/clean-corpus.py 清洗成 corpus.txt）。语料未就绪时跳过——Rust 侧
+# bigram.rs 会退化回 unigram（trans_cost 恒 0），不影响编译与运行。
+corpus="$src/.cache/corpus/corpus.txt"
+if [ -f "$corpus" ]; then
+    echo "  bigram -> data/val_map.bin + data/bigram.bin"
+    python3 "$src/tools/mkbigram.py" --dict "$here/data/dict.bin" --corpus "$corpus" \
+        --out-map "$here/data/val_map.bin" --out-bigram "$here/data/bigram.bin"
+else
+    echo "  跳过 bigram（语料未就绪；先跑 fetch-corpus.sh + clean-corpus.py）"
+fi
+
 font=$(sh "$src/scripts/find-font.sh") || {
     echo "系统里找不到含汉字的字体，无法烘焙字形" >&2
     exit 1
