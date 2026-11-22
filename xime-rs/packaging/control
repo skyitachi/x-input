@@ -5,18 +5,23 @@ Priority: optional
 Architecture: @ARCH@
 Installed-Size: @SIZE@
 Maintainer: xime <xime@localhost>
+Recommends: fcitx5-frontend-all
 Description: 单包装完即用的 Wayland 原生中文输入法（Rust 实现）
- 直接基于 zwp_input_method_v2 协议实现的输入法，不需要 fcitx/ibus 框架，
- 不需要配置环境变量，不需要 GTK/Qt 输入法模块。安装后即可在 KDE Plasma(KWin)
- 与所有 wlroots 合成器上使用；KDE 下会装一个带 X-KDE-Wayland-VirtualKeyboard
- 标记的桌面条目，可在「系统设置 → 键盘 → 虚拟键盘」里直接选中 xime。
+ 直接基于 zwp_input_method_v2/v1 协议实现的输入法，不需要 fcitx/ibus 框架，
+ 不需要配置环境变量。Wayland 原生应用（Qt6/GTK4/Electron）零客户端依赖直接用；
+ X11/XWayland 应用（微信、WPS 等）走 xime 内置的 fcitx5-DBus 前端，需搭配
+ fcitx5 的客户端模块（本包 Recommends: fcitx5-frontend-all，只拉 qt/gtk 模块、
+ 不拉 fcitx5 守护进程）。安装后即可在 KDE Plasma(KWin) 与所有 wlroots 合成器
+ 上使用；KDE 下会装一个带 X-KDE-Wayland-VirtualKeyboard 标记的桌面条目，
+ 可在「系统设置 → 键盘 → 虚拟键盘」里直接选中 xime。
  与 fcitx5 完全共存：xime-switch 随时互相切换（systemd 用户单元 / 进程级均可），
  内置会话级单实例锁，重复拉起不会抢席位。
  .
  本包是纯 Rust 版本，采用 musl 静态链接：二进制不依赖任何动态库
- （无 libc、无 libwayland、无 libxkbcommon、无 freetype），因此本包
- 没有任何 Depends. Wayland 协议栈（含 wire 协议、XKB keymap 解析）
- 与软光栅渲染都在 Rust 内实现。
+ （无 libc、无 libwayland、无 libxkbcommon、无 freetype），因此无 Depends。
+ Wayland 协议栈（含 wire 协议、XKB keymap 解析）与软光栅渲染都在 Rust 内实现。
+ X11/XWayland 覆盖由 Recommends 的 fcitx5 客户端模块 + 内置 DBus 前端完成，
+ 不引入任何 X11/XIM 代码。
  .
  内置 14 万条拼音词条与 7500 字形，支持全拼、简拼（nh -> 你好）、
  尾部音节补全（nih -> 你好）与整句解码（jintiantianqihenhao -> 今天天气很好）。

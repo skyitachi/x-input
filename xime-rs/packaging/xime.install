@@ -10,6 +10,12 @@ post_install() {
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
         su -s /bin/sh "$SUDO_USER" -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u); xime-setup --auto --quiet' || true
     fi
+
+    # 可选依赖提示：X11/XWayland 应用输入需 fcitx5 客户端模块（post_install 在
+    # pacman 事务内跑，不能嵌套 pacman -S，所以这里只提示，安装交给
+    # `sudo xime-setup --auto` 或 `sudo pacman -S --needed fcitx5-qt fcitx5-gtk`）。
+    echo "提示：X11/XWayland 应用输入需 fcitx5 客户端模块（可选依赖）。"
+    echo "      sudo pacman -S --needed fcitx5-qt fcitx5-gtk   # 或 sudo xime-setup --auto"
 }
 
 pre_remove() {

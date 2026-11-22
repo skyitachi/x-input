@@ -5,7 +5,8 @@
 Wayland 原生的中文拼音输入法（含英文前缀补全），纯 Rust 实现，**单个静态二进制、零动态依赖、零系统接线**（不注入任何进程、不需要环境变量；输入法自身的配置界面是另一回事，见下）。
 
 同一方案先前有一个 C 版本。Rust 版不是把 C 代码翻译一遍，而是换了两个关键决策，
-换来一项 C 版做不到的性质：**安装包没有 Depends**。
+换来一项 C 版做不到的性质：**安装包没有硬 Depends**（XWayland 覆盖所需的 fcitx5
+客户端模块以 `Recommends` 声明，只拉 qt/gtk 模块、不拉 fcitx5 守护进程）。
 
 ---
 
@@ -37,8 +38,10 @@ $ ldd xime
         statically linked
 ```
 
-对一个"装完就能用"的输入法来说，这不是炫技：**没有 Depends 意味着不会因为
-系统升级 soname 而失效，也不会和别的输入法框架的依赖树打架。**
+对一个"装完就能用"的输入法来说，这不是炫技：**没有硬 Depends 意味着不会因为
+系统升级 soname 而失效，也不会和别的输入法框架的依赖树打架。**（X11/XWayland
+应用需要 fcitx5 客户端模块，由 `Recommends: fcitx5-frontend-all` 声明——只拉
+qt/gtk 客户端模块、不拉 fcitx5 守护进程，缺省时 `xime-setup --auto` 会补装。）
 
 顺带还有一个反直觉的结果：Rust 版比 C 版**快**。
 37 字整句逐键解码 C 版 9.32ms、Rust 版 5.67ms，原因见第四节。
@@ -80,8 +83,10 @@ XMODIFIERS=@im=fcitx
 | XWayland / X11 的 GTK | fcitx5-gtk → DBus 前端 | ✅ 候选窗由客户端自绘 |
 
 因此**不需要为了 Wayland 应用去注释这些变量**，也不需要给单个应用单独设值。
-`xime-setup` 以前会注释 `~/.config/environment.d/99-fcitx5-im.conf`，现在这一步可有可无；
-已经注释掉的也不用恢复（不设变量时 Wayland 应用照样走原生通道）。
+`xime-setup` 以前会注释 `~/.config/environment.d/99-fcitx5-im.conf`，现在这一步已经反转：
+它只会把旧版注释掉的变量**恢复回来**（XWayland 应用靠这些变量加载 fcitx5-qt/gtk 再连
+`xime --dbus`），不会再去注释。不设变量时 Wayland 原生应用照样走原生通道，
+只是 X11/XWayland 应用没有中文。
 
 完整的 KDE 接入说明、两个会让连接当场断掉的协议签名坑、以及 XWayland 的局限，
 见 [`docs/kde-input-method-v1.md`](docs/kde-input-method-v1.md)。
@@ -760,7 +765,7 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 
 | | C 版 | Rust 版 |
 |---|---|---|
-| deb Depends | `libc6`、`libwayland-client0`、`libxkbcommon0` | **无** |
+| deb Depends | `libc6`、`libwayland-client0`、`libxkbcommon0` | **无**（Recommends `fcitx5-frontend-all` 供 XWayland） |
 | 构建期依赖 | gcc、wayland-scanner、libwayland-dev、libxkbcommon-dev | cargo + musl target |
 | 体积 | 2.7MB / 安装 6.7MB | 3.1MB / 安装 7.6MB |
 | 代码量 | 约 2200 行 C | 约 4600 行 Rust（含约 900 行单元测试） |

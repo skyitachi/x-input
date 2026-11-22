@@ -173,24 +173,27 @@ user_home() {
 # 这两个变量通常由 im-config 或用户自己写进 environment.d。xime 不需要它们
 # （应用直接走 Wayland text-input），所以安装时把它们注释掉，并保留备份。
 kde_env_fix() {
+    # 早期只有 Wayland 前端时，这里会把 QT_IM_MODULE/GTK_IM_MODULE/XMODIFIERS 注释掉，
+    # 好让 Qt/GTK 应用绕过 fcitx 模块、走 Wayland text-input。现在有了 DBus 前端
+    # （xime-both），X11/XWayland 应用反而**依赖**这些变量去加载 fcitx5-qt/gtk 再连
+    # xime --dbus；Wayland 原生 Qt6 又不读这些变量。所以这里不再注释，只把旧版
+    # 已经注释成 `#xime: ...` 的行恢复回来。
     home=$(user_home)
-    changed=0
+    restored=0
     for f in "$home"/.config/environment.d/*.conf "$home"/.config/plasma-workspace/env/*.sh; do
         [ -f "$f" ] || continue
-        grep -qE '^[[:space:]]*(export[[:space:]]+)?(QT_IM_MODULE|GTK_IM_MODULE|XMODIFIERS)=' "$f" || continue
-        say "  $f 里设置了 IM 模块变量 → 会让 Qt/GTK 应用绕过 Wayland text-input"
+        grep -qE '^[[:space:]]*#xime:[[:space:]]*(export[[:space:]]+)?(QT_IM_MODULE|GTK_IM_MODULE|XMODIFIERS)=' "$f" || continue
+        say "  $f 里有旧版注释掉的 IM 模块变量 → 恢复（XWayland 应用走 DBus 前端需要）"
         if [ "$DRY" -eq 1 ]; then continue; fi
         cp -n "$f" "$f.xime-backup" 2>/dev/null || true
-        # 整行注释（而不是只注释变量名）：`export #QT_IM_MODULE=...` 虽然能跑，
-        # 但 `export` 不带参数会把整个环境打印一遍，登录脚本里很吵。
-        sed -i -E '/^[[:space:]]*(export[[:space:]]+)?(QT_IM_MODULE|GTK_IM_MODULE|XMODIFIERS)=/s/^/#xime: /' "$f"
-        changed=1
+        sed -i -E 's/^[[:space:]]*#xime:[[:space:]]*//' "$f"
+        restored=1
     done
-    if [ "$changed" -eq 1 ]; then
-        say "  已注释掉（原文件备份为 *.xime-backup）。"
+    if [ "$restored" -eq 1 ]; then
+        say "  已恢复（原文件备份为 *.xime-backup）。"
         say "  **需要重新登录一次**：环境变量只在登录时导入，改完当次会话不生效。"
     else
-        say "  IM 模块变量: 无（应用会走 Wayland text-input，符合预期）"
+        say "  IM 模块变量: 保持原样（设为 fcitx 时 XWayland 应用走 DBus 前端，Wayland 原生应用不受影响）"
     fi
 }
 
@@ -337,6 +340,58 @@ bind_key() {
     fi
 }
 
+# fcitx5 客户端模块（qt/gtk）是否已装。xime 的 DBus 前端靠它们做客户端：
+# X11/XWayland 应用通过 fcitx5-qt/gtk 连到 xime --dbus，不装则这些应用退回 XIM。
+# 用包管理器判断最可靠（插件文件路径各发行版不同：Debian /usr/lib/<triplet>/qt6，
+# Arch /usr/lib/qt6）。任一模块包已装即可，不必是 -all 元包。
+frontends_present() {
+    if command -v dpkg-query >/dev/null 2>&1; then
+        dpkg-query -W -f='${Status}\n' \
+            fcitx5-frontend-qt6 fcitx5-frontend-qt5 fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
+            2>/dev/null | grep -q 'install ok installed'
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Q fcitx5-qt >/dev/null 2>&1 || pacman -Q fcitx5-gtk >/dev/null 2>&1
+    else
+        find /usr/lib -name 'libfcitx5platforminputcontextplugin.so' 2>/dev/null | grep -q .
+    fi
+}
+
+# 缺客户端模块时自动补装（方案 A：把 fcitx5-qt/gtk 当推荐依赖，让 X11/XWayland
+# 应用走 DBus 前端）。幂等：已装直接返回；无包管理器或无 root 时只提示、不报错。
+ensure_frontends() {
+    if frontends_present; then
+        say "  fcitx5 客户端模块（qt/gtk）已装：X11/XWayland 应用覆盖 OK"
+        return 0
+    fi
+    say "  ⚠ 未检测到 fcitx5 客户端模块（fcitx5-qt/gtk）→ X11/XWayland 应用（微信/WPS 等）"
+    say "    会退回 XIM、无中文输入。"
+    if [ "$DRY" -eq 1 ]; then
+        say "  [dry-run] 将自动安装客户端模块"
+        return 0
+    fi
+    SUDO=
+    if [ "$(id -u)" -ne 0 ]; then
+        # postinst 用 su 拉起的 --auto 没有 TTY，sudo 会卡在密码提示上，所以用 -n 探测
+        if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            SUDO=sudo
+        else
+            say "  （需 root 才能自动装。请手动执行："
+            say "    Debian/Ubuntu: sudo apt-get install -y fcitx5-frontend-all"
+            say "    Arch:          sudo pacman -S --noconfirm --needed fcitx5-qt fcitx5-gtk）"
+            return 0
+        fi
+    fi
+    if command -v apt-get >/dev/null 2>&1; then
+        say "  自动安装 fcitx5-frontend-all ..."
+        $SUDO apt-get install -y fcitx5-frontend-all
+    elif command -v pacman >/dev/null 2>&1; then
+        say "  自动安装 fcitx5-qt fcitx5-gtk ..."
+        $SUDO pacman -S --noconfirm --needed fcitx5-qt fcitx5-gtk
+    else
+        say "  （未识别到 apt/pacman，跳过自动安装；请手动安装 fcitx5 客户端模块）"
+    fi
+}
+
 status() {
     say "会话: ${XDG_CURRENT_DESKTOP:-未知}  类型: $(detect_desktop)"
     say "二进制: $BIN $([ -x $BIN ] && echo 存在 || echo 缺失)"
@@ -361,6 +416,11 @@ status() {
         say "kwinrc 默认值: $(grep -h '^InputMethod=' /etc/xdg/kwinrc 2>/dev/null || echo 未设置)"
     else
         say "kwinrc 默认值: /etc/xdg/kwinrc 不存在"
+    fi
+    if frontends_present; then
+        say "fcitx5 客户端模块: 已装（X11/XWayland 应用走 DBus 前端）"
+    else
+        say "fcitx5 客户端模块: 缺失（X11/XWayland 应用退回 XIM、无中文）——xime-setup --auto 可补装"
     fi
     say "切换输入法: xime-switch（xime ⇄ fcitx5）"
     if [ -x "$BIN" ]; then "$BIN" --check || true; fi
@@ -441,6 +501,8 @@ case "$MODE" in
                     autostart_wlroots "$kind"
                 fi ;;
         esac
+        # X11/XWayland 覆盖：缺 fcitx5 客户端模块时自动补装（幂等）
+        ensure_frontends
         say "完成后重新登录（KDE）或重载合成器配置（sway/Hyprland）即生效。"
         say "运行中切换输入法: xime-switch"
         ;;

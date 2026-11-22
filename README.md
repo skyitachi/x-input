@@ -8,8 +8,9 @@
 
 输入法是 `zwp_input_method_v2` 协议的**一端**，应用是 `zwp_text_input_v3` 的**另一端**，
 两者从不直接对话，全部由合成器（KWin / wlroots）转接。所以不需要往任何进程里注入东西，
-单包零配置、零环境变量就能工作。代价是覆盖面被协议锁死：合成器不实现输入法协议（GNOME/Mutter）
-或应用不在 Wayland 上（XWayland），这条路就走不通。
+单包零配置、零环境变量就能工作。覆盖面的边界：合成器不实现输入法协议（GNOME/Mutter）时
+原生前端不可用；应用在 XWayland 上时走内置的 fcitx5-DBus 前端（`xime-both`），
+需搭配推荐安装的 fcitx5 客户端模块（qt/gtk）。
 
 详细机制见 [`docs/xime-key-flow.md`](docs/xime-key-flow.md)。
 
@@ -17,7 +18,7 @@
 
 | 路径 | 说明 |
 |---|---|
-| [`xime-rs/`](xime-rs/README.md) | **Rust 版（主攻）**。纯 Rust 手写 wire 协议 + 手解析 XKB keymap + musl 静态链接，产物 `ldd` 显示 `statically linked`，deb 无 `Depends`。当前分支 `feat/slint-ui` 候选窗改用 Slint 软件渲染（见 [`docs/slint-ui.md`](docs/slint-ui.md)） |
+| [`xime-rs/`](xime-rs/README.md) | **Rust 版（主攻）**。纯 Rust 手写 wire 协议 + 手解析 XKB keymap + musl 静态链接，产物 `ldd` 显示 `statically linked`，deb 无硬 `Depends`（Recommends fcitx5 客户端模块供 XWayland）。当前分支 `feat/slint-ui` 候选窗改用 Slint 软件渲染（见 [`docs/slint-ui.md`](docs/slint-ui.md)） |
 | [`wayland-ime/`](wayland-ime/README.md) | **C 版（对照）**。同一方案的首版实现，依赖 libwayland-client / libxkbcommon / libm / libc 四个动态库，代码更短、便于审计 |
 | [`docs/`](docs/) | 跨实现文档：全链路原理、应用×合成器兼容矩阵、Slint 迁移、fcitx5 已知问题 |
 | [`fcitx5-preedit-fix/`](fcitx5-preedit-fix/README.md) | fcitx5 空预编辑丢更新的补丁（与 xime 无关，修的是 fcitx5 自身 bug） |
@@ -28,7 +29,7 @@
 
 | | C 版（`wayland-ime/`） | Rust 版（`xime-rs/`） |
 |---|---|---|
-| 运行时依赖 | libwayland-client0、libxkbcommon0 等 4 个 `.so` | **无**（静态链接，deb 无 Depends） |
+| 运行时依赖 | libwayland-client0、libxkbcommon0 等 4 个 `.so` | **无**（静态链接，deb 无硬 Depends） |
 | 构建期依赖 | gcc、wayland-scanner、libwayland-dev、libxkbcommon-dev | cargo + musl target + 系统 CJK 字体 |
 | 二进制体积 | 2.7MB（装 6.7MB） | 3.1MB（装 7.6MB，Slint 分支 15.9MB） |
 | 37 字整句解码 | 9.32ms | 5.67ms |

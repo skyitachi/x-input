@@ -63,6 +63,11 @@ packager = xime <xime@localhost>
 size = $SIZE
 arch = $ARCH
 license = MIT
+# optdepend：X11/XWayland 应用覆盖需要 fcitx5 客户端模块（DBus 前端靠它们做客户端）。
+# 只拉客户端模块，不拉 fcitx5 守护进程。pacman 不会自动装 optdepend，
+# 缺省由 xime-setup --auto 里的 ensure_frontends 补装。
+optdepend = fcitx5-qt: X11/XWayland Qt 应用输入（QT_IM_MODULE=fcitx 走 DBus 前端）
+optdepend = fcitx5-gtk: X11/XWayland GTK 应用输入（GTK_IM_MODULE=fcitx 走 DBus 前端）
 EOF
 
 # .MTREE：pacman 安装时核对文件清单与校验和（不含 .MTREE 自身）。
@@ -79,4 +84,4 @@ else
           .MTREE .PKGINFO .INSTALL usr ) | gzip -n > "$OUT"
 fi
 
-echo "  $OUT  ($(du -h "$OUT" | cut -f1)，零 depends，pacman -U 安装)"
+echo "  $OUT  ($(du -h "$OUT" | cut -f1)，零硬依赖；optdepend: fcitx5-qt/gtk，pacman -U 安装)"
