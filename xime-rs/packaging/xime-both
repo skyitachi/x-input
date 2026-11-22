@@ -121,12 +121,16 @@ start_dbus() {
                 "$XIME" --dbus >>"$DBUS_LOG" 2>&1 &
                 ;;
             *)
-                # 在子 shell 里关掉继承来的合成器 fd，再 exec 成 DBus 前端。
-                # 光关 fd 不够：WAYLAND_SOCKET 这个变量还指着那个编号，
-                # 一旦 fd 号被进程内其它 open 复用，就等于指向了别的东西。
-                # DBus 前端本来不连 Wayland，所以连变量一起清掉最干净。
-                ( eval "exec ${WAYLAND_SOCKET}<&-"; unset WAYLAND_SOCKET
-                  exec "$XIME" --dbus ) \
+                # DBus 前端不连 Wayland，关键是清掉 WAYLAND_SOCKET 变量，
+                # 免得它误以为自己是合成器拉起的连接。用 env -u 在启动那一刻
+                # 清变量即可，不必也不该手动 close fd。
+                #
+                # 旧写法 `eval "exec ${WAYLAND_SOCKET}<&-"` 在 dash（本机的 /bin/sh）
+                # 下会报 "exec: N: not found" 直接失败，DBus 前端根本起不来
+                # （2026-11-23 实测，命令行的 fd 重定向不支持这种动态编号）。
+                # 继承来的 fd 留着无害：DBus 前端一行 Wayland 代码都没有，
+                # 不会去用它；KWin 看到连接还在，反而便于席位交接。
+                env -u WAYLAND_SOCKET "$XIME" --dbus \
                     >>"$DBUS_LOG" 2>&1 &
                 ;;
         esac
