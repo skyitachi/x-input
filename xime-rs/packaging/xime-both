@@ -1,0 +1,274 @@
+#!/bin/sh
+# xime-both - 双进程模式：Wayland 前端 + fcitx5 DBus 前端。
+#
+#   xime-both                自动判断：Wayland 会话起两个进程，X11/GNOME 只起 DBus
+#   xime-both --dbus-only    只起 DBus 前端（X11 / GNOME / 手工指定）
+#   xime-both --status       查看两个前端各自是否在跑
+#
+# 为什么要两个进程：
+#   Wayland 前端（`xime`）实现 zwp_input_method_v1/v2，只服务会建 text-input 的
+#   Wayland 应用。
+#   DBus 前端（`xime --dbus`）假装 fcitx5 守护进程，服务 X11 / XWayland /
+#   自带 fcitx5-qt / fcitx5-gtk 模块的应用。
+#   两条路的应用选择发生在应用启动时，因此只能是两个进程 + 按应用路由，
+#   不可能让同一个应用同时走两条路。
+#
+# 关于环境变量（2026-11-22 实测，别再按旧说法改）：
+#   `QT_IM_MODULE` / `GTK_IM_MODULE` 写 **fcitx 或 fcitx5 都可以**。
+#   插件只认这两个 Key 来「加载谁」，**协议由服务名决定**：fcitx5-qt 的
+#   HybridInputContext 先看 org.fcitx.Fcitx5 有没有主，有就走 fcitx5 协议
+#   （InputContext1 + UpdateClientSideUI），没有才退回 fcitx4 的
+#   org.fcitx.Fcitx-0。所以 xime 占住 org.fcitx.Fcitx5 之后，两个写法等价。
+#   实测：fcitx / fcitx5 各跑一次，capability 都是 0xe000800072（含 bit39）。
+#   真正没生效的是 Wayland 原生 Qt6——它用内置 text-input，不加载该插件，
+#   这条路由 Wayland 前端负责，与本脚本无关。
+#
+# 生命周期：
+#   - Wayland 前端在前台，DBus 前端在后台；收到 SIGTERM/SIGINT 时一并回收，
+#     这样 xime-switch 切到 fcitx5 时不会残留一个占着 org.fcitx.Fcitx5 的进程。
+#   - Wayland 前端自己退出（崩溃/没席位）时保留 DBus 前端，X11 应用还能继续用。
+#   - fcitx5 正在跑时自动跳过 DBus 前端，避免服务名冲突。
+set -eu
+
+XIME=${XIME_BIN:-}
+if [ -z "$XIME" ]; then
+    for _b in "${HOME}/.local/bin/xime" /usr/bin/xime /usr/local/bin/xime; do
+        [ -x "$_b" ] && { XIME=$_b; break; }
+    done
+    : "${XIME:=/usr/bin/xime}"
+fi
+
+LOG_DIR=${XDG_STATE_HOME:-${HOME}/.local/state}
+DBUS_LOG="$LOG_DIR/xime-dbus.log"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+# 本启动器的 PID 记在运行时目录：xime-switch 靠它找到启动器。
+# 它是 shebang 脚本，comm 是 xime-both，但按命令行 pgrep -f 匹配会误伤
+# 命令行里带了同名字符串的无关进程（实测把调用它的 shell 也杀了），所以写 PID 文件。
+PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/xime-both.pid"
+
+pidfile_write() { printf '%s\n' "$$" >"$PID_FILE" 2>/dev/null || true; }
+pidfile_clear() {
+    [ -r "$PID_FILE" ] || return 0
+    [ "$(cat "$PID_FILE" 2>/dev/null)" = "$$" ] && rm -f "$PID_FILE" 2>/dev/null
+    return 0
+}
+
+DBUS_CHILD=
+WAYLAND_CHILD=
+
+say() { printf '%s\n' "$*"; }
+
+usage() {
+    cat <<EOF
+用法: xime-both [--dbus-only] [--status]
+
+  （无参数）       Wayland 会话：同时起 Wayland 与 DBus 两个前端
+                  X11 / GNOME：只起 DBus 前端
+  --dbus-only     强制只起 DBus 前端
+  --status        列出两个前端的运行状态
+EOF
+}
+
+# 判断某个 xime 进程是不是 --dbus 前端
+proc_is_dbus() {
+    _p=$1
+    [ -r "/proc/$_p/cmdline" ] || return 1
+    tr '\0' ' ' <"/proc/$_p/cmdline" 2>/dev/null | grep -q -- '--dbus'
+}
+
+find_dbus_pid() {
+    for _p in $(pgrep -x xime 2>/dev/null || true); do
+        if proc_is_dbus "$_p"; then
+            printf '%s' "$_p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_wayland_pid() {
+    for _p in $(pgrep -x xime 2>/dev/null || true); do
+        proc_is_dbus "$_p" && continue
+        printf '%s' "$_p"
+        return 0
+    done
+    return 1
+}
+
+# 确认某个 PID 是否已经接管 org.fcitx.Fcitx5（busctl 的 PID 列就是持有者）
+dbus_name_owner_is() {
+    command -v busctl >/dev/null 2>&1 || return 0
+    busctl --user list 2>/dev/null |
+        awk -v p="$1" '$1 == "org.fcitx.Fcitx5" && $2 == p { found = 1 } END { exit !found }'
+}
+
+# DBus 子进程不碰 Wayland。把 KWin 传进来的 WAYLAND_SOCKET 关掉，
+# 否则它会一直持有合成器连接，KWin 看到输入法连接“还在”，清理会滞后。
+start_dbus() {
+    if _pid=$(find_dbus_pid); then
+        say "DBus 前端已在运行（PID $_pid），不重复启动"
+        return 0
+    fi
+    if pgrep -x fcitx5 >/dev/null 2>&1; then
+        say "fcitx5 正在运行，跳过 DBus 前端（org.fcitx.Fcitx5 服务名被占用）"
+        return 0
+    fi
+
+    if [ -n "${WAYLAND_SOCKET:-}" ]; then
+        case "$WAYLAND_SOCKET" in
+            *[!0-9]*|'')
+                "$XIME" --dbus >>"$DBUS_LOG" 2>&1 &
+                ;;
+            *)
+                # 在子 shell 里关掉继承来的合成器 fd，再 exec 成 DBus 前端。
+                # 光关 fd 不够：WAYLAND_SOCKET 这个变量还指着那个编号，
+                # 一旦 fd 号被进程内其它 open 复用，就等于指向了别的东西。
+                # DBus 前端本来不连 Wayland，所以连变量一起清掉最干净。
+                ( eval "exec ${WAYLAND_SOCKET}<&-"; unset WAYLAND_SOCKET
+                  exec "$XIME" --dbus ) \
+                    >>"$DBUS_LOG" 2>&1 &
+                ;;
+        esac
+    else
+        "$XIME" --dbus >>"$DBUS_LOG" 2>&1 &
+    fi
+    DBUS_CHILD=$!
+    # 抢服务名是异步的：fcitx5 可能被 D-Bus 激活抢先，也可能上一个 xime 还没释放。
+    # 等最多约 2 秒确认结果，别「以为起来了其实没接管」。
+    _i=0
+    while [ "$_i" -lt 10 ]; do
+        kill -0 "$DBUS_CHILD" 2>/dev/null || break
+        dbus_name_owner_is "$DBUS_CHILD" && break
+        sleep 0.2
+        _i=$((_i + 1))
+    done
+    if ! kill -0 "$DBUS_CHILD" 2>/dev/null; then
+        say "DBus 前端启动后立即退出，多半是 org.fcitx.Fcitx5 被抢占（fcitx5 被激活？）"
+        say "  日志尾部：$(tail -n 3 "$DBUS_LOG" 2>/dev/null | tr '\n' ' ')"
+        DBUS_CHILD=
+        return 0
+    fi
+    if dbus_name_owner_is "$DBUS_CHILD"; then
+        say "DBus 前端已启动（PID $DBUS_CHILD，已接管 org.fcitx.Fcitx5，日志: $DBUS_LOG）"
+    else
+        say "DBus 前端在跑（PID $DBUS_CHILD），但暂未接管服务名；稍后用 --status 复查"
+    fi
+}
+
+cleanup() {
+    pidfile_clear
+    if [ -n "${DBUS_CHILD:-}" ]; then
+        kill "$DBUS_CHILD" 2>/dev/null || true
+        wait "$DBUS_CHILD" 2>/dev/null || true
+        DBUS_CHILD=
+        say "DBus 前端已停止"
+    fi
+    if [ -n "${WAYLAND_CHILD:-}" ]; then
+        kill "$WAYLAND_CHILD" 2>/dev/null || true
+        wait "$WAYLAND_CHILD" 2>/dev/null || true
+        WAYLAND_CHILD=
+    fi
+}
+
+on_signal() {
+    cleanup
+    exit 0
+}
+
+trap on_signal INT TERM HUP
+
+MODE=auto
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dbus-only) MODE=dbus ;;
+        --status) MODE=status ;;
+        -h|--help) usage; exit 0 ;;
+        *) printf 'xime-both: 未知参数 %s\n' "$1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [ "$MODE" = status ]; then
+    if _pid=$(find_wayland_pid); then
+        say "Wayland 前端: 运行中（PID $_pid）"
+    else
+        say "Wayland 前端: 未运行"
+    fi
+    if _pid=$(find_dbus_pid); then
+        say "DBus 前端:   运行中（PID $_pid）"
+    else
+        say "DBus 前端:   未运行"
+    fi
+    if command -v busctl >/dev/null 2>&1; then
+        _owner=$(busctl --user list 2>/dev/null |
+            awk '$1 == "org.fcitx.Fcitx5" && $2 != "-" { print $3 "（PID " $2 "）"; exit }')
+        say "服务名 org.fcitx.Fcitx5: ${_owner:-无人持有（fcitx5 可被激活）}"
+    fi
+    exit 0
+fi
+
+if [ "$MODE" = auto ]; then
+    # 纯 X11 会话没有 Wayland 连接；GNOME/Mutter 不实现 input-method 协议。
+    if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${WAYLAND_SOCKET:-}" ]; then
+        MODE=dbus
+    fi
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*|*gnome*|*Unity*|*unity*) MODE=dbus ;;
+    esac
+fi
+
+if [ "$MODE" = dbus ]; then
+    start_dbus
+    if [ -n "${DBUS_CHILD:-}" ]; then
+        # 前台等 DBus 子进程，收到信号时由 trap 回收
+        pidfile_write
+        wait "$DBUS_CHILD" || true
+    elif find_dbus_pid >/dev/null; then
+        say "DBus 前端由其它实例提供，本进程退出"
+    else
+        say "DBus 前端未能启动；若已装 fcitx5，请先 xime-switch fcitx5 或停掉 fcitx5"
+        exit 1
+    fi
+    exit 0
+fi
+
+# Wayland 会话：先起 DBus，再前台跑 Wayland。
+# DBus 起失败不影响 Wayland（例如 fcitx5 占着服务名），反之亦然。
+start_dbus
+
+# 一个 Wayland 前端就能服务所有 Wayland 应用，且 xime 有单实例锁。
+# 会话里已经有了（KWin 早先拉起 / 手动启动过）就不再起第二个，只保留 DBus 半边。
+if _wp=$(find_wayland_pid); then
+    if [ -n "${DBUS_CHILD:-}" ]; then
+        say "Wayland 前端已在运行（PID $_wp），只补充 DBus 半边（PID $DBUS_CHILD）"
+        pidfile_write
+        wait "$DBUS_CHILD" || true
+    elif _dp=$(find_dbus_pid); then
+        say "Wayland 前端（PID $_wp）与 DBus 前端（PID $_dp）都已在运行，本进程退出"
+    else
+        say "Wayland 前端已在运行（PID $_wp），但 DBus 前端没起来（服务名可能被 fcitx5 占用）"
+    fi
+    exit 0
+fi
+
+"$XIME" "$@" &
+WAYLAND_CHILD=$!
+say "Wayland 前端已启动（PID $WAYLAND_CHILD）"
+
+# 不用 exec：保留本进程作为 supervisor，KWin/systemd 发 SIGTERM 时能回收 DBus 子进程。
+# Wayland 自己退出时故意不杀 DBus —— X11 应用仍然需要它。
+pidfile_write
+rc=0
+wait "$WAYLAND_CHILD" || rc=$?
+WAYLAND_CHILD=
+if [ -n "${DBUS_CHILD:-}" ] && kill -0 "$DBUS_CHILD" 2>/dev/null; then
+    # 最常见的情形是单实例锁：会话里已有 Wayland 前端（KWin 早先拉起的那个），
+    # 刚起的这个会立刻退出并打印「已有实例在运行」，此时 DBus 半边照样有用
+    # ——微信/WPS 这类 XWayland 应用靠它。所以这里不算失败，也不连坐。
+    say "Wayland 前端已退出（$rc）；DBus 前端继续运行（PID $DBUS_CHILD），X11/XWayland 应用不受影响"
+    # 继续以 supervisor 身份持有 DBus，别让它变成没人回收的孤儿。
+    wait "$DBUS_CHILD" || true
+else
+    say "Wayland 前端已退出（$rc）；DBus 前端未运行"
+fi

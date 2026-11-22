@@ -4,11 +4,16 @@
 //! 微信、WPS、Electron 应用、以及 X11 / GNOME 会话下的任何 GTK/Qt 程序。
 //!
 //! 与 Wayland 前端的关系：
-//! - 两者互斥（DBus 前端要独占 `org.fcitx.Fcitx5` 服务名，fcitx5 也一样）
+//! - 与 **fcitx5 守护进程**互斥（都要独占 `org.fcitx.Fcitx5` 服务名）
+//! - 与 **xime 自己的 Wayland 前端**可以同时跑（两个进程，见 `packaging/xime-both`）：
+//!   应用在启动时各自选一条，X11/XWayland 走这里，Wayland 原生走那边
 //! - 共用 `engine` / `dict` / `zh`，不共享任何 Wayland 代码
-//! - 候选窗由客户端自绘（Qt 客户端恒声明 ClientSideInputPanel），
+//! - 候选窗由客户端自绘（Qt / GTK 客户端都声明 ClientSideInputPanel），
 //!   所以这里不需要 atlas、render、shm、popup 一行代码——这正是 Wayland
 //!   路径上最费劲的部分
+//!
+//! 环境变量写 `fcitx` 或 `fcitx5` 都能连上：插件的 Key 只是「加载谁」，
+//! 走哪套协议由服务名 `org.fcitx.Fcitx5` 是否被占用决定（见文档第十五节）。
 //!
 //! 协议实现依据 `docs/fcitx5-dbus-frontend.md`，并经 Phase 0/0.5 实测验证。
 

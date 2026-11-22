@@ -1,5 +1,5 @@
 [Unit]
-Description=xime Wayland input method (zwp_input_method_v2)
+Description=xime input method (Wayland frontend + fcitx5 DBus frontend)
 # 和 fcitx5 一样的接法：等合成器起来（WAYLAND_DISPLAY 由 uwsm/会话导入用户
 # 管理器之后 graphical-session.target 才算 active），合成器退场时跟着退。
 After=graphical-session.target
@@ -8,10 +8,12 @@ PartOf=graphical-session.target
 # 管理器是活的）；没有 WAYLAND_DISPLAY 起来的 xime 连不上合成器，还会把
 # graphical-session.target 之后的正式启动挡住——所以直接跳过本次启动。
 ConditionEnvironment=WAYLAND_DISPLAY
-ConditionPathExists=/usr/bin/xime
+ConditionPathExists=/usr/bin/xime-both
 
 [Service]
-ExecStart=/usr/bin/xime
+# xime-both 起两个子进程：Wayland 前端（前台语义）+ DBus 前端（等同 fcitx5 守护）。
+# 不用 Type= 指定：默认 simple，主进程是 supervisor，SIGTERM 时它会一并回收子进程。
+ExecStart=/usr/bin/xime-both
 # 合成器重启会杀掉 Wayland 连接；always（而不是 on-failure）保证它跟着
 # graphical-session.target 回来。进程崩溃同理。
 Restart=always

@@ -23,6 +23,7 @@ mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" \
          "$STAGE/usr/lib/systemd/user" "$OUTDIR"
 
 install -m 755 "$BIN" "$STAGE/usr/bin/xime"
+install -m 755 packaging/xime-both "$STAGE/usr/bin/xime-both"
 install -m 755 packaging/xime-setup "$STAGE/usr/bin/xime-setup"
 install -m 755 packaging/xime-switch "$STAGE/usr/bin/xime-switch"
 install -m 644 README.md "$STAGE/usr/share/doc/xime/README.md"

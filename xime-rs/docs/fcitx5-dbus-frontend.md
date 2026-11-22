@@ -660,6 +660,42 @@ preedit」提到 Commit 之前——那样 GTK 会先按旧 preedit 的长度定
   `get_position()` 会读到 0，看起来像「光标跳到行首」，其实只是中间态。
   探针现在会在 `GLib.idle_add` 里补采一次稳态，避免把正常时序当成 bug。
 
+## 十五、`QT_IM_MODULE` 到底写什么：fcitx 与 fcitx5 等价（2026-11-22）
+
+之前这里留过一句「必须是 `fcitx5`，`fcitx` 是 fcitx4 协议」，**是错的**，实测推翻：
+
+1. **插件只看键名决定加载谁。** `libfcitx5platforminputcontextplugin.so` 的
+   metadata 里 `Keys = ["fcitx", "fcitx5"]`（`QT_DEBUG_PLUGINS=1` 能直接看到
+   `Got keys from plugin meta data QList("fcitx", "fcitx5")`），
+   `QFcitx5PlatformInputContextPlugin::create()` 对两个值都返回同一个
+   `QFcitxPlatformInputContext`。
+2. **协议由服务名决定，不由环境变量决定。** `HybridInputContext::doRecheck()`
+   先看 `FcitxQtWatcher`（watch `org.fcitx.Fcitx5`）是否可用，可用就用
+   `FcitxQtInputContextProxy`（`InputContext1` + `UpdateClientSideUI`）；
+   不可用才退回 `Fcitx4InputContextProxy`（`org.fcitx.Fcitx-0`，watch 名字是
+   `org.fcitx.Fcitx-<displayNumber>`，另外还看 `~/.config/fcitx/dbus/*` socket）。
+3. 所以只要 xime 占住 `org.fcitx.Fcitx5`，`fcitx` 和 `fcitx5` 完全等价。
+
+本机实测（`xime --dbus --verbose` + 自编译 Qt6 探针，`QT_QPA_PLATFORM=xcb`）：
+
+```
+QT_IM_MODULE=fcitx   → CreateInputContext ...（program=qtimtest）
+                       ic1 当前能力 0xe000800072      ← bit39 ClientSideInputPanel
+QT_IM_MODULE=fcitx5  → ic1 当前能力 0xe000800072      ← 完全一致
+GTK_IM_MODULE=fcitx  → ic2 当前能力 0xc001000032      ← GTK 也声明 bit39
+```
+
+GTK 侧同样两个键都注册（`gtk-3.0/immodules.cache` 里 `"fcitx"` 与 `"fcitx5"`
+指向同一个 `im-fcitx5.so`），且该模块确实连接 `update-client-side-ui`
+（二进制里有 `update-client-side-ui`、`First Candidate`、`Vertical Candidate List`），
+**候选窗由 GTK 自己画**，不需要服务端 UI。
+
+一个反直觉的点：**Wayland 原生的 Qt6 根本不加载这个插件**。同样的探针换成
+`QT_QPA_PLATFORM=wayland`，`QT_DEBUG_PLUGINS` 里插件只有 metadata 被扫到、
+没有 `loaded library`，也没有任何 D-Bus 调用——Qt6 在 Wayland 上用自己的
+`text-input-v3` 实现，`QT_IM_MODULE` 对它无效。这条路由 xime 的 Wayland 前端负责，
+也正是「双进程」能同时成立的原因。
+
 ## 参考
 
 - `fcitx/fcitx5-qt` · `qt5/dbusaddons/interfaces/*.xml`、`qt5/dbusaddons/fcitxqtinputcontextproxy_p.h`、`qt5/platforminputcontext/qfcitxplatforminputcontext.cpp`

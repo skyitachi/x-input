@@ -98,9 +98,9 @@ fi
 say "安装到 $BINDIR ..."
 run install -m 755 "$BUILT" "$BINDIR/xime"
 
-# 两个脚本与二进制必须同源：xime-switch 认路径、xime-setup 写 .desktop 的 Exec，
-# 版本错开会出现「切换成功但 Exec 指向别处」这类难查的错位。
-for s in xime-setup xime-switch; do
+# 脚本与二进制必须同源：xime-switch 认路径、xime-setup 写 .desktop 的 Exec、
+# xime-both 负责双进程拉起，版本错开会出现「切换成功但 Exec 指向别处」这类难查的错位。
+for s in xime-setup xime-switch xime-both; do
     if [ -f "packaging/$s" ]; then
         run install -m 755 "packaging/$s" "$BINDIR/$s"
     fi
@@ -124,15 +124,21 @@ printf '  %-28s %s\n' "版本" "$("$inst" --version 2>&1 | head -n1)"
 # 表现为「重装完还是旧版」。这里直接把错位指出来。
 if [ -f "$DESKTOP" ]; then
     exec_line=$(sed -n 's/^Exec=//p' "$DESKTOP" | head -n1)
-    if [ "$exec_line" != "$inst" ]; then
+    # 允许带参数（Exec=/path/xime-both --dbus-only 这类），只比较可执行文件本身。
+    exec_bin=${exec_line%% *}
+    # 双进程模式下 Exec 指向同目录的 xime-both 才是正确配置，不算错位。
+    if [ "$exec_bin" != "$inst" ] && [ "$exec_bin" != "$BINDIR/xime-both" ]; then
         say ""
         say "⚠ $DESKTOP 的 Exec 指向 $exec_line"
         say "  与本次安装路径 $inst 不一致；KWin 会按 .desktop 拉起，等于仍跑旧位置那份。"
         if [ "$fix_desktop" -eq 1 ]; then
+            # 有 xime-both 就改指向它：只写 $inst 会丢掉 DBus 半边（微信/WPS 就没中文了）。
+            fix_target=$inst
+            [ -x "$BINDIR/xime-both" ] && fix_target="$BINDIR/xime-both"
             tmp=$(mktemp)
-            sed "s|^Exec=.*|Exec=$inst|" "$DESKTOP" > "$tmp" && install -m 644 "$tmp" "$DESKTOP"
+            sed "s|^Exec=.*|Exec=$fix_target|" "$DESKTOP" > "$tmp" && install -m 644 "$tmp" "$DESKTOP"
             rm -f "$tmp"
-            say "  已改写为 Exec=$inst"
+            say "  已改写为 Exec=$fix_target"
         else
             say "  加 --fix-desktop 可自动改写。"
         fi

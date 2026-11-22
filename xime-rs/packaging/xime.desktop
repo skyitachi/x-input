@@ -9,7 +9,11 @@ GenericName[zh_TW]=輸入法
 Comment=Wayland-native Chinese input method (no fcitx/ibus framework)
 Comment[zh_CN]=Wayland 原生中文输入法，不依赖 fcitx/ibus 框架
 Comment[zh_TW]=Wayland 原生中文輸入法，不依賴 fcitx/ibus 框架
-Exec=/usr/bin/xime
+# xime-both 是双进程启动器：Wayland 前端 + fcitx5 DBus 前端同时起，
+# 前者服务 Wayland 原生应用，后者服务 XWayland/X11 及带 QT_IM_MODULE=fcitx 的应用。
+# 它只是 supervisor，真正的 Wayland 前端仍是它的子进程，KWin 传进来的
+# WAYLAND_SOCKET 由子进程继承。
+Exec=/usr/bin/xime-both
 Icon=input-keyboard
 Terminal=false
 Categories=Utility;

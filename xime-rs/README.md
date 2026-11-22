@@ -55,23 +55,34 @@ KWin 用 `zwp_input_method_v1`（`--frontend auto` 自动识别），引擎与�
 |---|---|---|
 | KDE Plasma (KWin) | ✅ | 走 `zwp_input_method_v1`；必须由 KWin 拉起（写 `kwinrc` 的 `InputMethod`，值必须是 `.desktop`）；`xime-setup` 自动接线 |
 | sway / Hyprland / labwc | ✅ | 直接作为普通客户端运行（`zwp_input_method_v2`） |
-| GTK3 / GTK4 / Qt / Electron 应用 | ✅ | 走 `zwp_text_input_v3`，不需要注入 `GTK_IM_MODULE`；**但必须没有** `QT_IM_MODULE`/`GTK_IM_MODULE`（见下） |
+| GTK3 / GTK4 / Qt / Electron 应用 | ✅ | 走 `zwp_text_input_v3`；设了 `QT_IM_MODULE`/`GTK_IM_MODULE` 的 X11/XWayland 应用改由 DBus 前端接（见下） |
 | GNOME (Mutter) | ❌ | Mutter 没实现 `zwp_input_method_v2`，任何非框架输入法都不可用 |
 | XWayland 应用 / xterm | ❌ | 不在协议覆盖范围内（要用只能走 XIM，那是框架的路子；KDE 上同理，KWin 只为 wl_surface 建上下文） |
 
-### KDE 上唯一的隐性前提：别设 `QT_IM_MODULE`
+### 环境变量：`QT_IM_MODULE=fcitx` 不再需要清掉
 
-KDE（Plasma 6 / KWin 6.6）下 xime 是 `zwp_input_method_v1` 的一端，文字由 KWin 转给
-应用。只要会话里存在下面任意一个变量，Qt/GTK 应用就会改走 fcitx 的 DBus 模块，
-**根本不创建 `zwp_text_input_v3`**，KWin 也就不为它建输入法上下文：
+早期只有 Wayland 前端时，会话里存在下面任意一个变量都会让 Qt/GTK 应用改走 fcitx
+的 DBus 模块、**不建 `zwp_text_input_v3`**，xime 一行日志都收不到：
 
 ```sh
-QT_IM_MODULE=fcitx        # 有它 → 应用里只能打出英文字母，xime 日志一行都没有
+QT_IM_MODULE=fcitx        # 或 fcitx5，两者等价（插件按服务名选协议，不看这个值）
 GTK_IM_MODULE=fcitx
 XMODIFIERS=@im=fcitx
 ```
 
-`xime-setup` 会把这几行注释掉（保留 `*.xime-backup`），改完**需要重新登录一次**。
+现在由 `xime-both` 同时跑两个前端，这条 DBus 通道正好被接下，于是：
+
+| 应用 | 实际走哪条 | 结果 |
+|---|---|---|
+| Wayland 原生 Qt6 | 内置 `text-input-v3`（Qt6 根本不加载 fcitx5-qt 插件，实测） | ✅ 原生候选窗 |
+| Wayland 原生 GTK3/4 | `text-input-v3`，除非设了 `GTK_IM_MODULE` | ✅ 原生候选窗 |
+| XWayland / X11 的 Qt（微信、WPS） | fcitx5-qt → DBus 前端 | ✅ 候选窗由客户端自绘 |
+| XWayland / X11 的 GTK | fcitx5-gtk → DBus 前端 | ✅ 候选窗由客户端自绘 |
+
+因此**不需要为了 Wayland 应用去注释这些变量**，也不需要给单个应用单独设值。
+`xime-setup` 以前会注释 `~/.config/environment.d/99-fcitx5-im.conf`，现在这一步可有可无；
+已经注释掉的也不用恢复（不设变量时 Wayland 应用照样走原生通道）。
+
 完整的 KDE 接入说明、两个会让连接当场断掉的协议签名坑、以及 XWayland 的局限，
 见 [`docs/kde-input-method-v1.md`](docs/kde-input-method-v1.md)。
 
@@ -116,16 +127,23 @@ xime --verbose &             # 看日志确认 "activate" 与 "keymap 已解析"
 软光栅绘制，鼠标事件照常接收——候选窗是穿透的，设置窗不必穿透。加一份
 `~/.config/xime/config.toml` 读写即可。这是产品化方向，不动摇零依赖的架构前提。
 
-### 第二条路：DBus 前端（`xime --dbus`）
+### 第二条路：DBus 前端（`xime --dbus`），与第一条路同时跑
 
 上面表格里打 ❌ 的几种情况——GNOME、X11/XWayland、以及只认 fcitx 的程序
-（微信、WPS、Electron）——可以靠 `--dbus` 覆盖。它根本不碰 Wayland 协议，
+（微信、WPS、Electron）——由 `--dbus` 前端覆盖。它根本不碰 Wayland 协议，
 而是抢下 fcitx5 的服务名 `org.fcitx.Fcitx5`，让程序**内置的** fcitx5-qt /
 fcitx5-gtk 客户端连上来：
 
 ```sh
-xime --dbus --verbose     # 需要先停掉 fcitx5，服务名唯一
+xime-both                # 推荐：Wayland 前端 + DBus 前端一起起
+xime-both --status       # 看两个前端各自在跑没、服务名归谁
+xime --dbus --verbose    # 只起 DBus 前端（需先停掉 fcitx5，服务名唯一）
 ```
+
+`xime-both` 是普通 shell 脚本（`packaging/xime-both`，装成 `/usr/bin/xime-both`）：
+Wayland 前端在后台语义上前台运行，DBus 前端作为它的兄弟进程；收到 SIGTERM 一并回收，
+Wayland 前端自己崩了也**不**杀 DBus 那半边（X11 应用还要用）。fcitx5 在跑时自动跳过
+DBus 前端，避免抢服务名。
 
 | 场景 | Wayland 前端 | `--dbus` 前端 |
 |---|---|---|
@@ -138,11 +156,12 @@ KDE 那格的「Wayland 前端 ✅」指的是 `zwp_input_method_v1`：xime 已�
 由 KWin 拉起、`--frontend auto` 自动识别，Wayland 应用全功能可用；但 KWin 只为
 `wl_surface` 建输入法上下文，**XWayland 应用（微信/WPS）仍然只能用 `--dbus`**。
 
-而且两条路的前提互斥：Wayland 前端要求会话里**没有** `QT_IM_MODULE=fcitx`，
-`--dbus` 前端则要求**有**它。同一时间只能选一条，换路要一并改环境变量（需重新登录）。
+两条路**不再互斥**：应用在启动时自己选一条，xime 两个前端各接一半。
+唯一不能做的是「同一个应用同时走两条」——那是 Qt/GTK 启动时单选决定的。
 
-这条路有个意外的好处：候选窗**由应用自己画**（Qt 客户端恒声明
-`ClientSideInputPanel`），所以 xime 不需要 atlas、render、shm、popup 任何代码——
+这条路有个意外的好处：候选窗**由应用自己画**（Qt 与 GTK 客户端都声明
+`ClientSideInputPanel`，bit 39；实测 Qt 的能力位是 `0xe000800072`、
+GTK 是 `0xc001000032`），所以 xime 不需要 atlas、render、shm、popup 任何代码——
 恰好是 Wayland 前端最费劲的那一半。代价是它和 fcitx5 互斥，且系统里要有
 `fcitx5-qt` / `fcitx5-gtk` 模块（只装模块，不需要跑 fcitx5 守护进程）。
 协议细节与实测记录见 `docs/fcitx5-dbus-frontend.md`。
@@ -730,9 +749,9 @@ cc -o /tmp/km /tmp/km.c $(pkg-config --cflags --libs xkbcommon) && /tmp/km
 | 英文不纠错、不预测下一词 | 刻意不做（见第六节） | 打错字不会被改正，也不会替用户补句首大写 |
 | Plasma 下必须由 KWin 拉起 | 只有 KWin 交出的那条专用连接上才看得到 `zwp_input_method_v1`（普通客户端去 registry 翻不到） | 手工 `xime &` 在 KDE 下会打印原因并以退出码 1 结束（不会静默占住单实例锁）；走桌面条目或 `xime-setup`。`kwinrc` 的 `InputMethod` 只认 `.desktop`，写裸二进制路径会被静默忽略 |
 | KDE 下切换输入法后，要先切一次焦点 | `activate` 由焦点变化驱动，KWin 不会在输入法重载瞬间补发 | 表现为「切过去直接打字没反应」，Alt+Tab 换一下窗口即恢复 |
-| 无法在 X11/XWayland 应用里用（Wayland 前端） | KWin 只为 `wl_surface` 建输入法上下文，X11 窗口没有 wl_surface；wlroots 系则是协议本身不覆盖 | 改用 `xime --dbus` 可覆盖（代价：必须保留 `QT_IM_MODULE=fcitx`，那样 Wayland 应用反过来收不到字） |
-| Qt 应用设了 `QT_IM_MODULE=fcitx` 时用不了 xime | Qt 会走 fcitx 的 DBus 平台插件，**根本不创建 `zwp_text_input_v3`**，xime 的提交无处可送 | 典型发行版（如 Omarchy）默认全局设了该变量；要用 xime 需在启动应用时清空它 |
-| 微信里用不了 xime（Wayland 前端） | 它虽是 Qt6 静态链接、确实创建 `zwp_text_input_v3`、xime 的 commit 也确实发出，但聊天框不插入文字；同样动作走 DBus 就正常，说明断在协议中继而非应用 | 改用 `xime --dbus`，已实测可打出中文（输入框实测为 `n你好`）；Wayland 前端下微信仍需走 fcitx5 |
+| 无法在 X11/XWayland 应用里用（Wayland 前端） | KWin 只为 `wl_surface` 建输入法上下文，X11 窗口没有 wl_surface；wlroots 系则是协议本身不覆盖 | 用 `xime-both`：DBus 前端覆盖 X11/XWayland，Wayland 应用仍走原生前端，两边同时可用 |
+| Qt/GTK 应用设了 `QT_IM_MODULE=fcitx` 时用不了 xime | 该应用改走 fcitx5-qt / fcitx5-gtk 的 DBus 模块，不再建 `zwp_text_input_v3` | 不用清掉变量：`xime --dbus` 冒充 fcitx5 守护进程接住它即可。值写 `fcitx` 或 `fcitx5` 都可以（插件按服务名 `org.fcitx.Fcitx5` 选协议） |
+| 微信里用不了 xime（Wayland 前端） | 它虽是 Qt6 静态链接、确实创建 `zwp_text_input_v3`、xime 的 commit 也确实发出，但聊天框不插入文字；同样动作走 DBus 就正常，说明断在协议中继而非应用 | 交给 `xime-both` 的 DBus 前端，已实测可打出中文（输入框实测为 `n你好`） |
 | 简繁只有 OpenCC `s2t` 一种口径 | 未生成 `s2tw`/`s2hk` 变体表（用词差异大，如 软件/軟體） | 台湾/香港用词习惯需另加一列转换表，接口已按 `Variant` 预留 |
 
 ---

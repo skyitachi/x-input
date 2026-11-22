@@ -13,8 +13,8 @@
 #
 # KDE 上输入法由 KWin 管理，切换 = 改 kwinrc 的 InputMethod 并通知 KWin 重载。
 # KWin 6.6 只提供 zwp_input_method_v1，xime 已实现这个前端（--frontend auto 自动
-# 识别），所以两边的 desktop 条目都**不带** --dbus，Exec 直接写二进制路径即可。
-# 详见 docs/kde-input-method-v1.md。
+# 识别）。desktop 的 Exec 指向 xime-both：由它同时拉起 Wayland 前端与 DBus 前端，
+# 两个进程各服务一类应用；详见 packaging/xime-both 与 README「双进程模式」。
 
 set -eu
 
@@ -25,6 +25,15 @@ if [ -z "$XIME" ]; then
     done
     : "${XIME:=/usr/bin/xime}"
 fi
+
+# 双进程启动器：找不到时退回单进程（旧安装仍可工作）
+XIME_BOTH=${XIME_BOTH_BIN:-}
+if [ -z "$XIME_BOTH" ]; then
+    for _b in "${XIME%/*}/xime-both" /usr/bin/xime-both /usr/local/bin/xime-both; do
+        [ -x "$_b" ] && { XIME_BOTH=$_b; break; }
+    done
+fi
+: "${XIME_BOTH:=$XIME}"
 FCITX=${FCITX_BIN:-/usr/bin/fcitx5}
 XIME_UNIT=xime.service
 LOG=${XDG_STATE_HOME:-${HOME}/.local/state}/xime.log
@@ -32,6 +41,32 @@ LOG=${XDG_STATE_HOME:-${HOME}/.local/state}/xime.log
 say() { printf '%s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 running() { pgrep -x "$1" >/dev/null 2>&1; }
+
+# 判断某 PID 是不是 xime-both 启动器：它的 cmdline 形如
+#   /bin/sh /path/to/xime-both [--dbus-only]
+# 只看 argv[1]（脚本路径），避免把命令行里恰好带这几个字的进程误判进来。
+proc_is_both() {
+    [ -r "/proc/$1/cmdline" ] || return 1
+    tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | sed -n '2p' | grep -q 'xime-both$'
+}
+
+# 找 xime-both 启动器。优先读它自己写的 PID 文件；读不到按进程名兜底。
+# 注意：shebang 脚本的 comm 取的是**脚本名**，所以 `pgrep -x xime-both` 有效，
+# 但 `pgrep -x sh` 找不到它（这一点实测确认，别凭直觉写 sh）。
+xime_both_pids() {
+    _pf="${XDG_RUNTIME_DIR:-/tmp}/xime-both.pid"
+    if [ -r "$_pf" ]; then
+        _bp=$(cat "$_pf" 2>/dev/null || true)
+        if [ -n "$_bp" ] && proc_is_both "$_bp"; then
+            printf '%s\n' "$_bp"
+            return 0
+        fi
+    fi
+    for _bp in $(pgrep -x xime-both 2>/dev/null || true); do
+        proc_is_both "$_bp" && printf '%s\n' "$_bp"
+    done
+    return 0
+}
 
 systemd_ready() {
     have systemctl || return 1
@@ -82,14 +117,15 @@ start_xime() {
         say "  xime 已启动（systemd 用户单元，登录自启）"
     else
         mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-        setsid -f "$XIME" >>"$LOG" 2>&1
-        say "  xime 已启动（日志: $LOG）"
+        setsid -f "$XIME_BOTH" >>"$LOG" 2>&1
+        say "  xime 已启动（双进程模式，日志: $LOG）"
     fi
-    # 微信/WPS 这类跑在 XWayland 下的应用不在 text-input 协议覆盖范围内：
-    # 原生前端（v2/v1）都够不着它们，要用中文只能换成 --dbus 前端（见
-    # docs/fcitx5-dbus-frontend.md），代价是必须保留 QT_IM_MODULE=fcitx 之类变量，
-    # 而那样 Wayland 应用就收不到 xime 的字了（见 docs/kde-input-method-v1.md 第四节）。
-    say "  提示：微信/WPS 等 XWayland 应用需要 xime --dbus 前端，与原生前端互斥"
+    # 双进程模式下两条通道同时存在：
+    #   Wayland 应用（未设 IM 变量）→ 原生 text-input
+    #   XWayland / X11 / 自带 fcitx5 模块的应用 → DBus
+    # 后者只要应用启动时带着 QT_IM_MODULE / GTK_IM_MODULE 即可，
+    # 值写 **fcitx 或 fcitx5 都一样**（插件按服务名选协议，2026-11-22 实测）。
+    say "  提示：XWayland/X11 应用用中文需要 QT_IM_MODULE=fcitx（或 fcitx5）"
 }
 
 stop_xime() {
@@ -98,10 +134,29 @@ stop_xime() {
         systemctl --user stop --quiet "$XIME_UNIT" 2>/dev/null || true
         say "  xime 已停止并取消自启"
     fi
+    # 启动器要显式停掉：它是独立进程，pgrep -x xime 抓不到它。
+    # 先给它发 TERM，让它按自己的 trap 回收 DBus 子进程；
+    # 只杀 xime 的话，启动器会把 DBus 那半守着，org.fcitx.Fcitx5 一直不释放。
+    if [ -n "$(xime_both_pids)" ]; then
+        for _p in $(xime_both_pids); do
+            kill "$_p" 2>/dev/null || true
+        done
+        say "  xime-both 启动器已终止（子进程随之回收）"
+    fi
     if running xime; then
         pkill -x xime || true
         say "  xime 进程已终止"
     fi
+    # 双进程模式下 DBus 那一半占着 org.fcitx.Fcitx5；名字没释放，fcitx5 起不来。
+    # 等它退干净再往下走，别让切换卡在「fcitx5 已启动但没接管」。
+    i=0
+    while [ "$i" -lt 25 ]; do
+        running xime && _alive=1 || _alive=0
+        if [ -n "$(xime_both_pids)" ]; then _alive=1; fi
+        [ "$_alive" -eq 0 ] && break
+        i=$((i + 1))
+        sleep 0.2
+    done
 }
 
 start_fcitx5() {
@@ -184,8 +239,9 @@ kde_xime_desktop() {
              /usr/share/applications/xime.desktop; do
         [ -n "$d" ] && [ -f "$d" ] && { printf '%s' "$d"; return 0; }
     done
-    # 没有 desktop 就临时造一个。Exec 直接写二进制：KWin 拉起的连接上只有 v1，
-    # xime 的 --frontend auto 会自动认；带 --dbus 反而会让 Wayland 应用收不到字。
+    # 没有 desktop 就临时造一个。Exec 指向 xime-both：由它同起 Wayland 与 DBus
+    # 两个前端（找不到 xime-both 时 XIME_BOTH 已回退成二进制本身）。
+    # 注意别在 Exec 里写 `--dbus`：那样 KWin 拉起的这份就不实现 Wayland 前端了。
     d="${XIME_DESKTOP:-${HOME}/.local/share/applications/xime.desktop}"
     mkdir -p "$(dirname "$d")"
     cat >"$d" <<EOF
@@ -194,7 +250,7 @@ Type=Application
 Name=xime
 GenericName=Input Method
 Comment=Wayland-native Chinese input method
-Exec=${XIME}
+Exec=${XIME_BOTH}
 Icon=input-keyboard
 Terminal=false
 Categories=Utility;
@@ -204,7 +260,7 @@ X-KDE-StartupNotify=false
 X-KDE-Wayland-VirtualKeyboard=true
 EOF
     have update-desktop-database && update-desktop-database "$(dirname "$d")" >/dev/null 2>&1 || true
-    say "KDE: 已自动创建 $d（Exec=$XIME）"
+    say "KDE: 已自动创建 $d（Exec=$XIME_BOTH）"
     printf '%s' "$d"
 }
 

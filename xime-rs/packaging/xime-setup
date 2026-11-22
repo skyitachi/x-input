@@ -15,6 +15,12 @@
 set -eu
 
 BIN=${XIME_BIN:-/usr/bin/xime}
+# KWin 拉起的应该是双进程启动器（Wayland 前端 + DBus 前端），
+# 这样 XWayland/X11 应用（QT_IM_MODULE=fcitx）也一并覆盖；没有启动器时退回裸二进制。
+LAUNCHER=$BIN
+for _c in "${BIN%/*}/xime-both" /usr/bin/xime-both /usr/local/bin/xime-both; do
+    [ -x "$_c" ] && { LAUNCHER=$_c; break; }
+done
 DESKTOP=${XIME_DESKTOP:-/usr/share/applications/xime.desktop}
 MARK="# added by xime-setup"
 
@@ -56,7 +62,7 @@ Name=xime
 Name[zh_CN]=xime 中文输入法
 GenericName=Input Method
 Comment=Wayland-native Chinese input method (no fcitx/ibus framework)
-Exec=$BIN
+Exec=$LAUNCHER
 Icon=input-keyboard
 Terminal=false
 Categories=Utility;
