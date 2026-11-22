@@ -131,8 +131,13 @@ def main():
     def on_delete(before, after):
         rec("DeleteSurroundingText", {"before": int(before), "after": int(after)})
 
-    def on_preedit(text, attrs, cursor):
-        rec("UpdateFormattedPreedit", {"text": "".join(str(t[0]) for t in text)})
+    def on_preedit(text, cursor):
+        # xime 的 UpdateFormattedPreedit 签名是 (Vec<(String, i32)>, i32 cursorpos)，
+        # 只有两个参数；cursorpos 是预编辑内部光标偏移。
+        rec("UpdateFormattedPreedit", {
+            "text": "".join(str(t[0]) for t in text),
+            "cursorpos": int(cursor),
+        })
 
     bus.add_signal_receiver(on_commit, signal_name="CommitString", dbus_interface=IF_IC, path=path)
     bus.add_signal_receiver(on_ui, signal_name="UpdateClientSideUI", dbus_interface=IF_IC, path=path)
