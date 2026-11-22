@@ -17,8 +17,10 @@
 //!
 //! 协议实现依据 `docs/fcitx5-dbus-frontend.md`，并经 Phase 0/0.5 实测验证。
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use futures_lite::StreamExt;
 use zbus::interface;
 use zbus::object_server::{ObjectServer, SignalEmitter};
 use zbus::Connection;
@@ -79,6 +81,9 @@ struct GlobalInner {
     variant: Variant,
     verbose: bool,
     next_id: u32,
+    /// DBus 客户端唯一名 → 它创建的 input context 路径列表。
+    /// 客户端断开（唯一名被总线回收）时据此销毁它的全部 IC，避免 busctl tree 残留。
+    contexts: HashMap<String, Vec<String>>,
 }
 
 /// 状态栏（omarchy 的 indicator）认这两个名字：keyboard-us = 英文直通，
@@ -94,6 +99,7 @@ impl Global {
                 variant,
                 verbose,
                 next_id: 0,
+                contexts: HashMap::new(),
             }),
         })
     }
@@ -173,6 +179,21 @@ impl Global {
         };
         g.next_id += 1;
         g.next_id
+    }
+
+    /// 记录某个客户端（owner 唯一名）名下新注册的 input context 路径。
+    fn register_context(&self, owner: String, path: String) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.contexts.entry(owner).or_default().push(path);
+        }
+    }
+
+    /// 取走某个客户端名下的全部 IC 路径（并清空该条目），用于断开时回收。
+    fn take_contexts(&self, owner: &str) -> Vec<String> {
+        self.inner
+            .lock()
+            .map(|mut g| g.contexts.remove(owner).unwrap_or_default())
+            .unwrap_or_default()
     }
 }
 
@@ -921,6 +942,7 @@ impl InputMethod {
         &self,
         #[zbus(object_server)] server: &ObjectServer,
         #[zbus(connection)] _conn: &Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         kvs: Vec<(String, String)>,
     ) -> zbus::fdo::Result<(zbus::OwnedObjectPath, Vec<u8>)> {
         let id = self.global.alloc_id();
@@ -930,6 +952,12 @@ impl InputMethod {
             .at(path.as_str(), ctx)
             .await
             .map_err(|e| zbus::fdo::Error::Failed(format!("注册 {path} 失败: {e}")))?;
+
+        // 记下调用方（客户端）的唯一名，它断开时据此销毁这个 IC
+        if let Some(owner) = header.sender() {
+            self.global
+                .register_context(owner.as_str().to_string(), path.clone());
+        }
 
         let program = kvs
             .iter()
@@ -1110,7 +1138,31 @@ pub fn run(variant: Variant, verbose: bool) -> Result<(), String> {
         }
 
         eprintln!("xime-dbus: 已接管 {SERVICE_MAIN}，等待客户端连接");
-        std::future::pending::<()>().await;
+
+        // 监听客户端断开：NameOwnerChanged 的 new_owner 变空 = 该唯一名被总线回收，
+        // 据此销毁它创建的 input context，避免 busctl tree 里残留 /inputcontext/N。
+        let dbus = zbus::fdo::DBusProxy::new(&conn)
+            .await
+            .map_err(|e| format!("建 DBusProxy 失败: {e}"))?;
+        let mut stream = dbus
+            .receive_name_owner_changed()
+            .await
+            .map_err(|e| format!("监听 NameOwnerChanged 失败: {e}"))?;
+        let server = conn.object_server().clone();
+        while let Some(sig) = stream.next().await {
+            let args = match sig.args() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            if args.new_owner().is_some() {
+                continue;
+            }
+            let owner = args.name().as_str().to_string();
+            for p in global.take_contexts(&owner) {
+                let _ = server.remove::<InputContext, _>(p.as_str()).await;
+                global.log(&format!("客户端 {owner} 断开，回收 {p}"));
+            }
+        }
         Ok::<(), String>(())
     })
 }

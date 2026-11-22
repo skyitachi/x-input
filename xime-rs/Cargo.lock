@@ -4637,6 +4637,7 @@ dependencies = [
 name = "xime"
 version = "0.3.0"
 dependencies = [
+ "futures-lite",
  "libc",
  "slint",
  "slint-build",

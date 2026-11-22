@@ -10,6 +10,9 @@ libc = "0.2"
 # 选 zbus 而非手写：静态链接后仅 +1.4M，而手写 DBus（认证 + 消息编解码 +
 # 数组/结构体对齐）约需 1400 行，出错代价高。
 zbus = "6.3"
+# DBus 前端监听 NameOwnerChanged 用（客户端断开时回收 input context）。
+# 只取 StreamExt::next 一个方法，纯 Rust、无 C 依赖，与静态链接目标一致。
+futures-lite = "2"
 # 候选窗 UI。只取布局与软件光栅，不要 winit/femtovg 后端：
 # Wayland 下普通 xdg_toplevel 无法自己定位，候选窗必须是 input_popup_surface，
 # 所以 Slint 只负责画到内存，像素再由我们交给合成器。
