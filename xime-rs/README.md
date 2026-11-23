@@ -411,8 +411,9 @@ Esc 取消、不消费的键经 `ctx.key` 回注、`ctx.modifiers` 回传修饰�
 
 ## 六、构建与安装
 
-构建期依赖：`cargo`、`python3`、`rustup target add x86_64-unknown-linux-musl`、
-以及一个系统 CJK 字体（用于烘焙字形）。重新生成数据（`scripts/gen-data.sh`）还需要
+构建期依赖：`cargo`、`python3`、系统 `fontconfig` 开发库（Slint 软件渲染用系统字体，
+需 pkg-config 可查到 freetype/fontconfig）。主线走宿主 gnu target，产物动态链接
+fontconfig 等库；不再需要 musl target。重新生成数据（`scripts/gen-data.sh`）还需要
 `python3-opencc`（生成简繁转换表）：Arch `pacman -S python-opencc`，其他平台 `pip install opencc`。
 `data/*.bin` 已生成好，日常构建不需要装它。
 
@@ -420,7 +421,7 @@ Esc 取消、不消费的键经 `ctx.key` 回注、`ctx.modifiers` 回传修饰�
 ./build.sh
 #  1/4 数据（复用 data/*.bin，缺失时调用 ../wayland-ime/tools 生成；
 #      简繁表由 scripts/gen-zh.py 用 OpenCC 预生成，并顺带导出繁体字符集给字体烘焙）
-#  2/4 静态编译
+#  2/4 宿主编译（gnu 动态链接；Slint 候选窗需 fontconfig）
 #  3/4 单元测试
 #  4/4 打包 → dist/xime_0.3.0_amd64.deb + dist/xime-0.3.0-1-x86_64.pkg.tar.zst
 

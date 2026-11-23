@@ -1,5 +1,5 @@
 #!/bin/sh
-# 把静态二进制组装成可 dpkg -i 的单包 deb。
+# 把编译产物（Slint 主线为动态链接 gnu 二进制）组装成可 dpkg -i 的单包 deb。
 #
 # 优先用 dpkg-deb；缺失时（如 Arch 系）用 ar + tar 手工组装，两者产物结构一致。
 # 注意：这里不依赖 rm，保证在受限环境里也能重复构建（原地覆盖）。
@@ -8,11 +8,21 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-BIN=target/x86_64-unknown-linux-musl/release/xime
+# Slint 主线走宿主 gnu target（动态链接 fontconfig）；保留 musl 路径兼容旧构建。
+# 可用 XIME_BIN 显式指定，供交叉编译产物打包。
+BIN="${XIME_BIN:-}"
+if [ -z "$BIN" ]; then
+    if [ -f target/release/xime ]; then
+        BIN=target/release/xime
+    else
+        BIN=target/x86_64-unknown-linux-musl/release/xime
+    fi
+fi
 STAGE=build/deb
 OUTDIR=dist
 
-[ -f "$BIN" ] || { echo "先执行 cargo build --release --target x86_64-unknown-linux-musl" >&2; exit 1; }
+[ -f "$BIN" ] || { echo "先执行 cargo build --release（或用 XIME_BIN 指定二进制路径）" >&2; exit 1; }
+echo "  打包二进制: $BIN"
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
 ARCH=amd64
@@ -67,4 +77,4 @@ else
     ( cd build/deb-arch && ar rc "$root/$OUT" debian-binary control.tar.gz data.tar.gz )
 fi
 
-echo "  $OUT  ($(du -h "$OUT" | cut -f1)，安装后 ${SIZE}KB，无 Depends)"
+echo "  $OUT  ($(du -h "$OUT" | cut -f1)，安装后 ${SIZE}KB，Depends: libc6/libfontconfig1/libgcc-s1)"

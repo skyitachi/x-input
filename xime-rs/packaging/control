@@ -5,6 +5,7 @@ Priority: optional
 Architecture: @ARCH@
 Installed-Size: @SIZE@
 Maintainer: xime <xime@localhost>
+Depends: libc6, libfontconfig1, libgcc-s1
 Recommends: fcitx5-frontend-all
 Description: 单包装完即用的 Wayland 原生中文输入法（Rust 实现）
  直接基于 zwp_input_method_v2/v1 协议实现的输入法，不需要 fcitx/ibus 框架，
@@ -17,11 +18,11 @@ Description: 单包装完即用的 Wayland 原生中文输入法（Rust 实现�
  与 fcitx5 完全共存：xime-switch 随时互相切换（systemd 用户单元 / 进程级均可），
  内置会话级单实例锁，重复拉起不会抢席位。
  .
- 本包是纯 Rust 版本，采用 musl 静态链接：二进制不依赖任何动态库
- （无 libc、无 libwayland、无 libxkbcommon、无 freetype），因此无 Depends。
- Wayland 协议栈（含 wire 协议、XKB keymap 解析）与软光栅渲染都在 Rust 内实现。
- X11/XWayland 覆盖由 Recommends 的 fcitx5 客户端模块 + 内置 DBus 前端完成，
- 不引入任何 X11/XIM 代码。
+ 纯 Rust 实现：Wayland 协议栈（wire 协议、XKB keymap 解析）与 DBus 前端都在
+ Rust 内完成，不引入 fcitx/ibus 框架或 X11/XIM 代码。候选窗自 Slint 合入后
+ 改用系统字体，动态链接 fontconfig/freetype（故有少量 Depends）；协议层
+ 仍不依赖 libwayland/libxkbcommon 等 .so。
+ X11/XWayland 覆盖由 Recommends 的 fcitx5 客户端模块 + 内置 DBus 前端完成。
  .
  内置 14 万条拼音词条与 7500 字形，支持全拼、简拼（nh -> 你好）、
  尾部音节补全（nih -> 你好）与整句解码（jintiantianqihenhao -> 今天天气很好）。

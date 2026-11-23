@@ -1,5 +1,5 @@
 #!/bin/sh
-# 把静态二进制组装成可 pacman -U 安装的 Arch 包（.pkg.tar.zst）。
+# 把编译产物（Slint 主线为动态链接 gnu 二进制）组装成可 pacman -U 安装的 Arch 包（.pkg.tar.zst）。
 #
 # 与 build-deb.sh 对应：文件布局一致（/usr/bin/xime、/usr/bin/xime-setup、文档），
 # 安装/卸载钩子取自 packaging/xime.install（pacman 约定的 post_install/pre_remove），
@@ -13,11 +13,21 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-BIN=target/x86_64-unknown-linux-musl/release/xime
+# Slint 主线走宿主 gnu target（动态链接 fontconfig）；保留 musl 路径兼容旧构建。
+# 可用 XIME_BIN 显式指定，供交叉编译产物打包。
+BIN="${XIME_BIN:-}"
+if [ -z "$BIN" ]; then
+    if [ -f target/release/xime ]; then
+        BIN=target/release/xime
+    else
+        BIN=target/x86_64-unknown-linux-musl/release/xime
+    fi
+fi
 STAGE=build/arch-pkg
 OUTDIR=dist
 
-[ -f "$BIN" ] || { echo "先执行 cargo build --release --target x86_64-unknown-linux-musl" >&2; exit 1; }
+[ -f "$BIN" ] || { echo "先执行 cargo build --release（或用 XIME_BIN 指定二进制路径）" >&2; exit 1; }
+echo "  打包二进制: $BIN"
 command -v bsdtar >/dev/null 2>&1 || { echo "缺少 bsdtar（libarchive）" >&2; exit 1; }
 
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
@@ -56,13 +66,17 @@ pkgname = xime
 pkgbase = xime
 xdata = pkgtype=pkg
 pkgver = $VERSION-1
-pkgdesc = 单包装完即用的 Wayland 原生中文输入法（Rust 实现，musl 静态链接，支持简繁与英文补全）
+pkgdesc = 单包装完即用的 Wayland 原生中文输入法（Rust 实现，支持简繁与英文补全）
 url = https://localhost/xime
 builddate = $DATE
 packager = xime <xime@localhost>
 size = $SIZE
 arch = $ARCH
 license = MIT
+# Slint 软件渲染用系统字体，动态链接 fontconfig/glibc/gcc-libs（fontconfig 会递归拉 freetype/expat）。
+depend = glibc
+depend = gcc-libs
+depend = fontconfig
 # optdepend：X11/XWayland 应用覆盖需要 fcitx5 客户端模块（DBus 前端靠它们做客户端）。
 # 只拉客户端模块，不拉 fcitx5 守护进程。pacman 不会自动装 optdepend，
 # 缺省由 xime-setup --auto 里的 ensure_frontends 补装。
@@ -84,4 +98,4 @@ else
           .MTREE .PKGINFO .INSTALL usr ) | gzip -n > "$OUT"
 fi
 
-echo "  $OUT  ($(du -h "$OUT" | cut -f1)，零硬依赖；optdepend: fcitx5-qt/gtk，pacman -U 安装)"
+echo "  $OUT  ($(du -h "$OUT" | cut -f1)，depend: glibc/gcc-libs/fontconfig；optdepend: fcitx5-qt/gtk，pacman -U 安装)"
