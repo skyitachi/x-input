@@ -5,6 +5,7 @@ mod en;
 mod engine;
 mod fcitx_dbus;
 mod font;
+mod im_state;
 mod keymap;
 mod popup;
 mod proto;
@@ -256,7 +257,13 @@ impl Xime {
             mods_locked: 0,
             group: 0,
             consumed: vec![false; CONSUMED_MAX],
-            chinese: !start_english,
+            chinese: if start_english {
+                false
+            } else {
+                // 双前端共享中英状态：文件里有就以文件为准，见 im_state 模块注释。
+                // 显式 --en 是启动时的强制指定，优先于共享状态。
+                im_state::read().unwrap_or(true)
+            },
             en: en::EnEngine::new(),
             en_passthrough,
             field_passthrough: false,
@@ -578,9 +585,19 @@ impl Xime {
                 self.log("deactivate");
                 self.engine.reset();
                 self.popup_hide()?;
-                // grab 键盘对象在 deactivate 后由合成器销毁，必须清零；
-                // 否则下次 activate 时 self.grab != 0 会跳过重新 grab，
-                // 输入法就再也收不到按键（表现为打字直接进应用、候选窗不弹）。
+                // 主动释放键盘 grab，而不是只把 id 清零。
+                //
+                // 合成器发 deactivate 只表示「本轮输入法不再被需要」，并不保证它已经把
+                // grab 对象销毁。Hyprland 0.56 实测就不会：焦点从 text-input 应用切到
+                // Qt/DBus 应用（Omarchy 菜单、Quickshell）后，按键继续被送进 grab，
+                // 而输入法这边已经 reset、不消费这些键 —— 字就凭空消失。
+                // 用户侧表现是「启动器里连一个英文字母都打不出来」，而 fcitx5 没这个问题
+                // （它的 Wayland 前端在 deactivate 时会 release）。
+                if self.grab != 0 {
+                    let _ = proto::im_grab_release(&mut self.conn, self.grab);
+                }
+                // 无论 release 是否成功都必须清零：否则下次 activate 时 self.grab != 0
+                // 会跳过重新 grab，输入法就再也收不到按键。
                 self.grab = 0;
                 self.send_preedit("", 0)?;
             }
@@ -829,6 +846,8 @@ impl Xime {
     fn on_key(&mut self, time: u32, key: u32, state: u32) -> std::io::Result<()> {
         let pressed = state == KEY_PRESSED;
         let idx = key as usize;
+        // 另一个前端可能刚切过中英，先对齐再判键，否则这一键会用旧状态处理
+        self.sync_shared_im();
         let sym = match &self.km {
             Some(km) => km.sym(key, self.mods_depressed),
             None => 0,
@@ -1090,12 +1109,37 @@ impl Xime {
     }
 
     /// 中英切换：先把当前未上屏的内容定下来，再清空两边的组字状态
+    /// 把另一个前端刚改过的中英状态同步过来。
+    ///
+    /// 每次拿到按键前调一次：共享文件只在 Shift 切换时变，正常打字是一次
+    /// 页缓存内的字符串读，代价可以忽略；换来的是「在哪个窗口切的状态都一致」。
+    fn sync_shared_im(&mut self) {
+        let Some(zh) = im_state::read() else { return };
+        if zh == self.chinese {
+            return;
+        }
+        self.chinese = zh;
+        self.engine.reset();
+        self.en.reset();
+        let _ = self.popup_hide();
+        self.log(if zh {
+            "同步为中文（另一前端切换）"
+        } else if self.en_passthrough {
+            "同步为英文（直通，另一前端切换）"
+        } else {
+            "同步为英文（前缀补全，另一前端切换）"
+        });
+    }
+
     fn toggle_language(&mut self) -> std::io::Result<()> {
         self.commit_selection()?;
         self.chinese = !self.chinese;
         self.engine.reset();
         self.en.reset();
         self.popup_hide()?;
+        // 通知另一个前端（DBus）：两个进程各管一半应用，状态必须一起变，
+        // 否则会出现"终端里切英文了、Qt 应用里还是中文"这种无从察觉的错位。
+        im_state::write(self.chinese);
         self.log(if self.chinese {
             "切换到中文模式"
         } else if self.en_passthrough {

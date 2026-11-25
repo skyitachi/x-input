@@ -36,6 +36,7 @@ install -m 755 "$BIN" "$STAGE/usr/bin/xime"
 install -m 755 packaging/xime-both "$STAGE/usr/bin/xime-both"
 install -m 755 packaging/xime-setup "$STAGE/usr/bin/xime-setup"
 install -m 755 packaging/xime-switch "$STAGE/usr/bin/xime-switch"
+install -m 755 packaging/xime-reconnect-shell "$STAGE/usr/bin/xime-reconnect-shell"
 install -m 644 README.md "$STAGE/usr/share/doc/xime/README.md"
 install -m 644 packaging/copyright "$STAGE/usr/share/doc/xime/copyright"
 # 外观配置样例：复制到 ~/.config/xime/config.ini 后按需改

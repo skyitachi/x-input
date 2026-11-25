@@ -100,7 +100,7 @@ run install -m 755 "$BUILT" "$BINDIR/xime"
 
 # 脚本与二进制必须同源：xime-switch 认路径、xime-setup 写 .desktop 的 Exec、
 # xime-both 负责双进程拉起，版本错开会出现「切换成功但 Exec 指向别处」这类难查的错位。
-for s in xime-setup xime-switch xime-both; do
+for s in xime-setup xime-switch xime-both xime-reconnect-shell; do
     if [ -f "packaging/$s" ]; then
         run install -m 755 "packaging/$s" "$BINDIR/$s"
     fi

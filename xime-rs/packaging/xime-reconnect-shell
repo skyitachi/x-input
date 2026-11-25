@@ -1,0 +1,73 @@
+#!/bin/sh
+# xime-reconnect-shell — 输入法服务启动后，让「比它更老」的 shell 重连
+#
+# 为什么需要它：
+#   fcitx5-qt / fcitx5-gtk 插件通过 well-known name `org.fcitx.Fcitx5` 连接输入法。
+#   xime.service 重启时 DBus 前端是**新进程**，unique name 变了；已运行的
+#   Quickshell 仍持有旧连接的代理，且不会在 NameOwnerChanged 后重连，于是
+#   「敲字完全没反应」。nautilus 这类新启动的进程会自动新建连接，所以现象是
+#   「有的应用能用、启动器不能用」。
+#
+#   服务端无法强制客户端重连，唯一可靠的解法是让客户端重来一次。本脚本挂在
+#   systemd ExecStartPost 上，只在 shell 确实比输入法服务旧（= 持有旧连接）时
+#   才重启它，避免每次服务重启都闪一下状态栏。
+#
+# 关闭：XIME_NO_SHELL_RESTART=1
+set -u
+
+log() { printf 'xime-reconnect-shell: %s\n' "$*" >&2; }
+
+[ "${XIME_NO_SHELL_RESTART:-0}" = "1" ] && { log "已禁用（XIME_NO_SHELL_RESTART=1）"; exit 0; }
+
+# 1) 等 xime 真正接管服务名（最多约 10 秒）
+i=0
+owner=
+while [ "$i" -lt 50 ]; do
+    owner=$(busctl --user list 2>/dev/null | awk '$1 == "org.fcitx.Fcitx5" { print $3; exit }')
+    [ "$owner" = "xime" ] && break
+    sleep 0.2
+    i=$((i + 1))
+done
+if [ "$owner" != "xime" ]; then
+    log "org.fcitx.Fcitx5 当前持有者=${owner:-无人}，不是 xime，跳过"
+    exit 0
+fi
+
+# 2) 找 DBus 前端 PID（命令行含 --dbus）
+xime_pid=
+for p in $(pgrep -x xime 2>/dev/null || true); do
+    if tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -q -- '--dbus'; then
+        xime_pid=$p
+        break
+    fi
+done
+[ -n "$xime_pid" ] || { log "未找到 xime --dbus 进程"; exit 0; }
+
+# 3) 找正在运行的 shell
+qs_pid=$(pgrep -x quickshell 2>/dev/null | head -1)
+[ -n "$qs_pid" ] || { log "quickshell 未运行，无需重连"; exit 0; }
+
+# 4) 比较启动先后：/proc/PID/stat 第 22 字段 starttime（开机后 jiffies），越小越早。
+#    comm 字段可能含空格或 ')'，所以先从最后一个以 ')' 结尾的字段定位。
+starttime_of() {
+    awk '{ p = 0; for (i = 1; i <= NF; i++) if ($i ~ /\)$/) { p = i; break }
+           if (p) print $(p + 20) }' "/proc/$1/stat" 2>/dev/null
+}
+qs_t=$(starttime_of "$qs_pid")
+xm_t=$(starttime_of "$xime_pid")
+if [ -z "$qs_t" ] || [ -z "$xm_t" ]; then
+    log "读不到进程启动时间（qs=$qs_t xime=$xm_t），保守跳过"
+    exit 0
+fi
+
+if [ "$qs_t" -lt "$xm_t" ]; then
+    log "shell(PID $qs_pid) 比输入法服务(PID $xime_pid) 更老，持有旧连接 → 重启以重连"
+    if command -v omarchy-restart-shell >/dev/null 2>&1; then
+        omarchy-restart-shell >/dev/null 2>&1 || log "omarchy-restart-shell 返回非零（锁屏或无会话时属正常）"
+    else
+        log "找不到 omarchy-restart-shell，跳过（请手动重启 shell）"
+    fi
+else
+    log "shell 启动晚于输入法服务（已是新连接），无需重启"
+fi
+exit 0

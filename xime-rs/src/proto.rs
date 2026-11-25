@@ -168,6 +168,19 @@ pub fn im_grab_keyboard(c: &mut Conn, im: u32, id: u32) -> io::Result<()> {
     c.send(im, 5, Msg::new().new_id(id))
 }
 
+/// 释放键盘 grab（`zwp_input_method_keyboard_grab_v2.release`，grab 对象上的 request 0）。
+///
+/// 为什么必须有：合成器只要还攥着这个 grab 对象，就会把**所有**键盘事件送进 grab，
+/// 而不是送给当前焦点 surface。`deactivate` 只表示「这一轮输入法不再被需要」，
+/// 并不保证合成器已经把这个对象销毁——Hyprland 0.56 就不会。
+/// 于是焦点切到 Qt/DBus 应用（Omarchy 菜单、Quickshell）之后，按键继续进 grab：
+/// 输入法这边已经 reset，又不消费这些键，字就直接蒸发了。
+/// 表现为「启动器里完全打不出字，连英文字母都没有」。
+pub fn im_grab_release(c: &mut Conn, grab: u32) -> io::Result<()> {
+    // request 0: release (destructor)
+    c.send(grab, 0, &Msg::new())
+}
+
 // --- zwp_virtual_keyboard_manager_v1
 pub fn vk_create(c: &mut Conn, mgr: u32, seat: u32, id: u32) -> io::Result<()> {
     // request 0: create_virtual_keyboard(seat object, id new_id)

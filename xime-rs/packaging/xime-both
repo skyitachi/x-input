@@ -209,6 +209,18 @@ if [ "$MODE" = status ]; then
             awk '$1 == "org.fcitx.Fcitx5" && $2 != "-" { print $3 "（PID " $2 "）"; exit }')
         say "服务名 org.fcitx.Fcitx5: ${_owner:-无人持有（fcitx5 可被激活）}"
     fi
+    # 两个前端共用这一份状态（见 src/im_state.rs）。看不到这一行就只能靠「打出来是
+    # 中文还是字母」反推，而英文模式下打字母看起来和输入法坏了没有区别。
+    _state="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/xime-im-state"
+    if [ -r "$_state" ]; then
+        case "$(cat "$_state" 2>/dev/null)" in
+            zh) say "中英状态:    中文（组字）" ;;
+            en) say "中英状态:    英文（直通，字母直接上屏）" ;;
+            *)  say "中英状态:    文件内容异常: $(cat "$_state" 2>/dev/null)" ;;
+        esac
+    else
+        say "中英状态:    未写入（各前端用启动默认值）"
+    fi
     exit 0
 fi
 

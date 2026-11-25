@@ -78,6 +78,9 @@ struct Global {
 
 struct GlobalInner {
     chinese: bool,
+    /// 英文态是否启用「前缀补全 + 候选窗」。
+    /// 默认关闭：fcitx5 的 keyboard-us 不出候选窗，xime 也照此处理（纯透传）。
+    en_completion: bool,
     variant: Variant,
     verbose: bool,
     next_id: u32,
@@ -91,11 +94,25 @@ struct GlobalInner {
 const IM_EN: &str = "keyboard-us";
 const IM_ZH: &str = "pinyin";
 
+/// 英文态的前缀补全是否开启（`XIME_EN_COMPLETION=1` 时恢复旧行为）。
+///
+/// 默认关闭，和命令行前端的 `--en-completion` 语义一致：fcitx5 在英文态
+/// （keyboard-us）不弹候选窗、不组字，xime 也不该弹——多出来的候选窗
+/// 会让人以为输入法在「抢字」，和 fcitx5 的行为对不上。
+fn en_completion_enabled() -> bool {
+    matches!(
+        std::env::var("XIME_EN_COMPLETION").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 impl Global {
     fn new(variant: Variant, verbose: bool) -> Arc<Global> {
         Arc::new(Global {
             inner: Mutex::new(GlobalInner {
-                chinese: true,
+                // 双前端共享中英状态（见 im_state 模块）：文件里有就以文件为准
+                chinese: crate::im_state::read().unwrap_or(true),
+                en_completion: en_completion_enabled(),
                 variant,
                 verbose,
                 next_id: 0,
@@ -113,6 +130,10 @@ impl Global {
 
     fn chinese(&self) -> bool {
         self.inner.lock().map(|g| g.chinese).unwrap_or(true)
+    }
+
+    fn en_completion(&self) -> bool {
+        self.inner.lock().map(|g| g.en_completion).unwrap_or(false)
     }
 
     fn variant(&self) -> Variant {
@@ -145,6 +166,7 @@ impl Global {
             Err(_) => return false,
         };
         g.chinese = zh;
+        crate::im_state::write(zh);
         if g.verbose {
             eprintln!("xime-dbus: 切到 {name}（{}）", if zh { "中文" } else { "英文" });
         }
@@ -166,6 +188,8 @@ impl Global {
         };
         g.chinese = !g.chinese;
         let now = g.chinese;
+        // 同步给 Wayland 前端，避免两边状态各自漂移
+        crate::im_state::write(now);
         if g.verbose {
             eprintln!("xime-dbus: 切换为{}", if now { "中文" } else { "英文" });
         }
@@ -181,6 +205,28 @@ impl Global {
         g.next_id
     }
 
+    /// 把 Wayland 前端刚改过的中英状态同步过来。
+    ///
+    /// 两个进程分别服务不同应用：在终端（Wayland）里按 Shift 切英文，Qt 应用
+    /// 这边必须跟着变，否则用户会遇到「同一个键在两边表现不同」且毫无提示。
+    fn sync_shared(&self) {
+        let Some(zh) = crate::im_state::read() else { return };
+        let mut g = match self.inner.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if g.chinese == zh {
+            return;
+        }
+        g.chinese = zh;
+        if g.verbose {
+            eprintln!(
+                "xime-dbus: 同步为{}（另一前端切换）",
+                if zh { "中文" } else { "英文" }
+            );
+        }
+    }
+
     /// 记录某个客户端（owner 唯一名）名下新注册的 input context 路径。
     fn register_context(&self, owner: String, path: String) {
         if let Ok(mut g) = self.inner.lock() {
@@ -194,6 +240,19 @@ impl Global {
             .lock()
             .map(|mut g| g.contexts.remove(owner).unwrap_or_default())
             .unwrap_or_default()
+    }
+
+    /// 从所有客户端的清单里摘掉一个已销毁的 IC 路径。
+    ///
+    /// 客户端自己发 DestroyIC 时用：路径要立刻从清单里移除，否则它断开连接时
+    /// 还会对这个已不存在的对象再 remove 一次，日志里出现一串无害但误导的报错。
+    fn forget_context(&self, path: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            for v in g.contexts.values_mut() {
+                v.retain(|p| p != path);
+            }
+            g.contexts.retain(|_, v| !v.is_empty());
+        }
     }
 }
 
@@ -370,6 +429,16 @@ impl InputContext {
             return Outcome::ignore();
         }
         st.shift_pending = false;
+
+        // 英文直通：与 fcitx5 的 keyboard-us 完全一致——不组字、不推 preedit、
+        // 不出候选窗，按键原样交回客户端。前缀补全只在 XIME_EN_COMPLETION=1 时启用。
+        if !self.global.chinese() && !self.global.en_completion() {
+            if st.en.active() {
+                st.reset_all();
+            }
+            st.last_consumed = false;
+            return Outcome::ignore();
+        }
 
         let out = if self.global.chinese() {
             key_zh(&mut st, keyval)
@@ -695,8 +764,28 @@ impl InputContext {
 
     async fn set_surrounding_text_position(&self, _cursor: u32, _anchor: u32) {}
 
-    async fn destroy_ic(&self) {
-        self.global.log(&format!("ic{} DestroyIC", self.id));
+    // 必须显式写名字：zbus 会把 destroy_ic 转成 DestroyIc，而 fcitx5 官方接口
+    // 叫 DestroyIC（大写 IC）。拼错的那段时间里，客户端每次调用都收到
+    // UnknownMethod，于是 /inputcontext/N 永不回收、无限累积。
+    #[zbus(name = "DestroyIC")]
+    async fn destroy_ic(&self, #[zbus(object_server)] server: &ObjectServer) {
+        let path = format!("{IC_PREFIX}/{}", self.id);
+        self.global.forget_context(&path);
+        let server = server.clone();
+        let global = self.global.clone();
+        let id = self.id;
+        // 不在这里直接 remove：此刻这个对象正在被派发（对象表上还挂着本次调用），
+        // 同线程里取写锁会和派发路径打架。挪到独立线程回收——派发一结束它就拿到锁，
+        // 效果等同于「调用返回后立刻销毁」，而 /inputcontext/N 不再无限累积。
+        std::thread::spawn(move || {
+            zbus::block_on(async move {
+                match server.remove::<InputContext, _>(path.as_str()).await {
+                    Ok(true) => global.log(&format!("ic{id} DestroyIC，已回收 {path}")),
+                    Ok(false) => global.log(&format!("ic{id} DestroyIC，{path} 已不在对象表")),
+                    Err(e) => global.log(&format!("ic{id} DestroyIC 回收 {path} 失败: {e}")),
+                }
+            });
+        });
     }
 
     async fn process_key_event(
@@ -708,6 +797,7 @@ impl InputContext {
         release: bool,
         _time: u32,
     ) -> bool {
+        self.global.sync_shared();
         self.sync_variant();
         let out = self.handle_key(keyval, state, release);
 

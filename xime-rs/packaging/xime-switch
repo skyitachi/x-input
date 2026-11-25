@@ -106,6 +106,21 @@ current() {
     fi
 }
 
+# 输入法服务重启后，长驻的 fcitx5-qt 客户端（Omarchy 的 Quickshell 启动器/状态栏）
+# 不会因 org.fcitx.Fcitx5 的服务名易主而自动重建输入上下文 —— 表现为启动器搜索框
+# 「完全没反应」（键既不组字也不上屏），而同时间新启动的应用（nautilus 等）却正常。
+# 唯一可靠的恢复办法是重启 shell，让它重新 CreateInputContext 连到当前服务。
+# 用 XIME_NO_SHELL_RESTART=1 可跳过（例如自动化脚本里不想闪一下状态栏）。
+reconnect_shell() {
+    [ "${XIME_NO_SHELL_RESTART:-0}" = "1" ] && return 0
+    have omarchy-restart-shell || return 0
+    pgrep -x quickshell >/dev/null 2>&1 || return 0
+    say "  重连 Omarchy shell（让启动器/状态栏接到新输入法服务）…"
+    omarchy-restart-shell >/dev/null 2>&1 \
+        && say "  shell 已重连 ✅" \
+        || say "  ⚠ shell 重连未完成（可能在锁屏中；解锁后手动 omarchy-restart-shell）"
+}
+
 start_xime() {
     if systemd_ready && unit_installed "$XIME_UNIT"; then
         systemctl --user enable --quiet "$XIME_UNIT" 2>/dev/null || true
@@ -126,6 +141,7 @@ start_xime() {
     # 后者只要应用启动时带着 QT_IM_MODULE / GTK_IM_MODULE 即可，
     # 值写 **fcitx 或 fcitx5 都一样**（插件按服务名选协议，2026-11-22 实测）。
     say "  提示：XWayland/X11 应用用中文需要 QT_IM_MODULE=fcitx（或 fcitx5）"
+    reconnect_shell
 }
 
 stop_xime() {
@@ -183,6 +199,7 @@ start_fcitx5() {
     else
         say "  fcitx5 已在运行"
     fi
+    reconnect_shell
 }
 
 stop_fcitx5() {
