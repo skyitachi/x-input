@@ -4,9 +4,13 @@
 
 Wayland 原生的中文拼音输入法（含英文前缀补全），纯 Rust 实现，**单个静态二进制、零动态依赖、零系统接线**（不注入任何进程、不需要环境变量；输入法自身的配置界面是另一回事，见下）。
 
-同一方案先前有一个 C 版本。Rust 版不是把 C 代码翻译一遍，而是换了两个关键决策，
+同一方案先前有一个 C 版本（`../wayland-ime/`）。Rust 版不是把 C 代码翻译一遍，而是换了两个关键决策，
 换来一项 C 版做不到的性质：**安装包没有硬 Depends**（XWayland 覆盖所需的 fcitx5
 客户端模块以 `Recommends` 声明，只拉 qt/gtk 模块、不拉 fcitx5 守护进程）。
+
+> C 版自 2026-11 起**冻结**，不再添加新功能，只用于协议/渲染的对照与回归基准。
+> 本 README 里「与 C 版一致」说的是**算法同源**（词网格 N-best、代价模型），不是能力等价：
+> 新词库、当期语料、模糊音与拼写错容错这些后续能力只在本实现里。
 
 ---
 
@@ -43,8 +47,11 @@ $ ldd xime
 应用需要 fcitx5 客户端模块，由 `Recommends: fcitx5-frontend-all` 声明——只拉
 qt/gtk 客户端模块、不拉 fcitx5 守护进程，缺省时 `xime-setup --auto` 会补装。）
 
-顺带还有一个反直觉的结果：Rust 版比 C 版**快**。
-37 字整句逐键解码 C 版 9.32ms、Rust 版 5.67ms，原因见第四节。
+顺带还有一个反直觉的结果：早期 Rust 版比 C 版**快**。
+37 字整句逐键解码 C 版 9.32ms、Rust 版 5.67ms（同为 14.3 万词库、纯词频打分），原因
+见第四节。但词库和模型都升级过之后，结论反过来了：**现在是 17.0 ms 对 9.32 ms**，
+多出来的时间全部花在三阶语言模型的上下文查表上（见「六点六」）。这是有意的取舍——
+16 ms 一帧的预算里，把 CPU 换给排序质量。
 
 ---
 
@@ -211,6 +218,7 @@ src/
 ├── keymap.rs   XKB keymap 文本解析 → keycode/keysym 表（替代 libxkbcommon）
 ├── dict.rs     词库：include_bytes! 零拷贝 + 二分查找 + O(1) 长度过滤
 ├── engine.rs   N-best 解码器
+├── ngram.rs    三元语言模型：KN 回退链 + 上下文预热（Ctx）
 ├── fuzzy.rs    模糊音与拼写错：音节表 + 音节级替换 + 编辑距离 1
 ├── render.rs   软光栅：圆角矩形 + 字形 alpha 叠加 + BMP 输出
 ├── font.rs     字形图集解析
@@ -220,8 +228,8 @@ src/
 └── shm.rs      memfd + mmap 提供 wl_shm 像素内存
 data/
 ├── dict.bin    33.3 万词条（9.9MB）
-├── val_map.bin 词条 id → 词形 id（1.3MB，供 bigram 查转移）
-├── bigram.bin  二元转移表（7.3MB，前 100 万对，当期维基语料）
+├── val_map.bin 词条 id → 词形 id（1.3MB，供 ngram 查概率）
+├── ngram.bin   三元语言模型（25.5MB，KN 平滑，33.2 万形/131 万对/140 万三元）
 ├── en.bin      1 万英文词（133KB）
 ├── en-words.txt  英文原始词表（按词频降序，75KB）
 ├── zh.bin      简繁转换表（275KB）
@@ -312,6 +320,10 @@ exact_into: lower_bound(p) → 长度 != len(p) 就返回
 | 37 字整句 | 9.324 ms | **5.674 ms** |
 
 （含逐键重算；`nihao` 那一项因为绝对值太小、受进程噪声影响，不具代表性）
+
+> 上表是 **14.3 万词库 + 纯词频打分** 时代的对比，只用来说明「O(1) 长度过滤」这个
+> 优化的价值，不代表当前状态。今天的数字是 33.3 万词库 + 三元模型下的 **17.0 ms**
+> （C 版仍是 9.32 ms），差距全在上下文查表，见「六点六」的性能一节。
 
 **词库规模会线性影响这里的数字。** 词条从 14.3 万扩到 33.3 万后，同一台机器上
 37 字整句由 9.98 ms 涨到 14.5 ms（+45%）——瓶颈不在边枚举，而在尾部补全的
@@ -790,17 +802,17 @@ cd ../xime-rs && sh scripts/gen-data.sh && cargo build --release
 - **同音窗口是 6 条**（`MAX_SAME_KEY`，与 `src/dict.rs` 的 `HITS` 必须一致）。
   排到第 7 位以后的词等于不存在——要么给它提频进前 6，要么同步调大这两个常量
   （词库体积会线性增长）。
-- **改了 `dict.bin` 就要管 `val_map.bin` / `bigram.bin`**：两者的 `val_id` 是
+- **改了 `dict.bin` 就要管 `val_map.bin` / `ngram.bin`**：两者的 `val_id` 是
   「按词形词频排的名次」，词库一变就整体平移。`gen-data.sh` 在有语料时会自动重跑
-  `tools/mkbigram` 重算两张表；没有语料时用 `python3 tools/remap-bigram.py`（按词形把
-  旧表的 id 翻译到新表，会丢掉新词库里已不存在的词形）。跳过这步不会报错，只会让
-  上下文消歧静默错位。
+  `tools/mkngram` 重建两张表；**没有就地下策**——旧表的 id 平移没有正确翻译方法
+  （`remap-bigram.py` 只认二元表格式，对三元表无用）。跳过这步不会报错，只会让
+  上下文消歧静默错位，所以 `gen-data.sh` 发现 `dict.bin` 比 `ngram.bin` 新时会打印警告。
 - **新字要重烘字形**：`gen-data.sh` 会顺带跑 `mkfont-ft`（读 `dict_gen.h` 的字符集 +
   `hant-chars.txt`）。只换 `dict.bin` 不重烘图集，新词里没见过的字会显示成空白格。
 
 ---
 
-## 六点六、当期语料（维基百科 dump）
+## 六点六、当期语料与三元语言模型（维基百科 dump）
 
 存量语料停在 2014 年，这不是「有噪声」而是**结构性缺口**：`内卷/躺平/破防/充电宝/
 大模型/直播间` 在 jieba 与字幕源里计数为 0，任何排序算法都救不回来，只能一个个往
@@ -850,56 +862,116 @@ prob = max(prob_存量, alpha * prob_当期)     仅当 当期 > 2 × 存量 时
 - **必须用 `--stride` 而不是 `--max-pages`。** dump 按页面 ID 排序，前 20% 基本是
   2003~2008 年创建的基础条目；截断等于把近十年的条目全丢掉，正好丢掉最需要的部分。
 
-### bigram 也换成了当期语料
+### 语言模型：三阶 modified Kneser-Ney（对齐 kenlm）
 
-`bigram.bin` 原来是 2014 年语料的转移表，换词库后只能用 `remap-bigram.py` 翻译
-`val_id`——翻译会丢掉新词库里已经不存在的词形，85.6 万对里少了 14%。现在用同一份
-维基正文重算了转移表：
+原来的 `bigram.bin` 是「PMI 折算的二阶表」，`TRANS_WEIGHT=0.4` 只让它在词频排序上做
+微调。这种表有两个天花板：一是看不到更早的上下文（`及其/机器 + 学习` 在二阶里长得
+一模一样），二是 PMI 不是概率，无法与词频口径统一，权重只能拍脑袋。
 
-```sh
-cd ../xime-rs && sh scripts/gen-data.sh   # 内部调 tools/mkbigram（Rust，自动编译）
+现在换成三阶模型，语义与 kenlm / ARPA 完全一致：
+
+```text
+P(w|a,b) = P3(w|a,b)              三元命中
+         = bow(a,b) · P(w|b)      三元未命中（bow 挂在 2-gram 行上）
+P(w|b)   = P2(w|b)                二元命中
+         = bow(b) · P1(w)         二元未命中（bow 挂在 1-gram 行上）
 ```
 
-- 语料 `wiki.txt` 直接可用：`mkbigram` 自己按词库做贪心最长匹配切分，**不需要 jieba**。
-  之前 README 写「重跑要 jieba 分词 20 分钟」是错的，那是另一条路径的开销。
-- 转移表从 856,567 对涨到 1,000,000 对（`--top` 上限），平均代价 -81.7 → -129.6
-  （PMI 口径，负数越大表示这个搭配比整体越常见）。
-- 28 条整句抽样（含 `damoxingdecanshu`/`weifuwujiagou`/`fenbushishiwu` 这类新词搭配）
-  的首选与前三名**全部不变**。别指望换表立刻改善输入：`TRANS_WEIGHT=0.4` 只让 bigram
-  做微调，真正决定候选顺序的仍是词频。换表的收益是「往后调权重、上三元时有干净的
-  当期数据可用」，而不是当下的排序变化。
-
-### mkbigram 为什么重写成 Rust
-
-`wayland-ime/tools/mkbigram.py` 仍是格式的权威文档与参考实现（两者输出逐字节一致），
-日常路径走 `xime-rs/tools/mkbigram.rs`。同一份 5.42M 行语料：**Python 版 77.6 s，
-Rust 版 27.4 s**。Python 版慢在三个地方，都是「数据搬运」而不是算法：
-
-| | Python 版 | Rust 版 |
+| 环节 | kenlm / lmplz | `tools/mkngram.rs` |
 |---|---|---|
-| 语料 | 整个文件读成 5.42M 个 `str` 常驻 | 一次 `read` 成 `Vec<u8>`，线程切 `&str` |
-| 分块 | `Pool.starmap` 把每块的行列表 pickle 进管道 | 分块按字节偏移，线程共享同一份只读切片 |
-| 切分 | 每位置切片出 `str` 再查 dict（命中即分配） | `&str` 零拷贝查表 |
-| 计数 | `Counter[(p, n)]` 元组 | `HashMap<u64, u32>`，key = `(prev<<32)\|next` |
-| 哈希 | 默认 SipHash | 内置 FxHash（十几行，零依赖） |
+| 平滑 | modified Kneser-Ney（Chen-Goodman） | 同：每阶独立拟合 `D1/D2/D3` |
+| 回退 | ARPA 链，`log10` 域相加 | 同 |
+| 低阶计数 | 接续计数（不同左上下文个数） | 同 |
+| 剪枝 | `--prune` 按相对熵 | 计数阈值 + 全局配额（简单、可复现） |
+| 二进制 | trie + q8 量化 | 分组有序表 + i16 定点（1e-3 log10） |
 
-编译与调用（零依赖，不进 cargo，与 `tools/uinput-inject.c` 同样处理）：
+**引擎里的口径**（`engine.rs`）：
+
+```text
+cost = 词频代价 + 词形代价 + CTX_WEIGHT · (log10 P1(w) − log10 P(w|ctx))
+```
+
+`CTX_WEIGHT = 1.0`（原来 `TRANS_WEIGHT = 0.4`）。注意用的是**相对一元**的差值而不是
+概率绝对值：这样词库词频（含人工提频、领域词表）继续主导排序，语言模型只在「两个
+候选词频接近」时出手。绝对值口径会让模型压过词库，人工提频立刻失效。
+
+规模（当期维基语料 5.42M 行 / 161.8M 字）：
+
+| | 数量 | 说明 |
+|---|---|---|
+| 词形 | 332,289 | 与词库一一对应（`val_map.bin` 定序） |
+| 二元 | 1,309,428 | 剪枝后（`--min-bigram 3`） |
+| 三元 | 1,397,567 | 剪枝后（`--min-trigram 3`） |
+| 体积 | 25.5MB | 旧的 `bigram.bin` 是 7.3MB |
+| 构建 | 34.6 s | 单文件零依赖，`rustc --edition 2021 -O` |
+
+自检：`ΣP1 = 1.0000`，二元与三元的每个上下文归一化偏差均 `0.0000`；导出的 ARPA 与
+`ngram.bin` 打分一致到量化误差（±0.0005）。
+
+```sh
+cd ../xime-rs && sh scripts/gen-data.sh    # 内部调 tools/mkngram（自动编译）
+# 或者只重建模型：
+rustc --edition 2021 -O -o tools/mkngram tools/mkngram.rs
+tools/mkngram --dict data/dict.bin --corpus ../wayland-ime/.cache/corpus/wiki.txt \
+    --out-map data/val_map.bin --out-ngram data/ngram.bin \
+    --top-bigram 1200000 --min-bigram 3 --min-trigram 3
+# 加 --arpa /tmp/zh.arpa 可额外导出 ARPA，用来和 kenlm 互验
+```
+
+语料 `wiki.txt` 直接可用：`mkngram` 自己按词库做贪心最长匹配切分，**不需要 jieba**。
+
+#### 四个踩过的坑
+
+- **回退权重挂错行**（最隐蔽的一个）。ARPA 里 1-gram 行的 `bow` 是「二元未命中退回
+  一元」用的，2-gram 行的 `bow` 才是「三元未命中退回二元」用的。最初把三元残差写进
+  `uni_bow`，自检三元上下文偏差 0.6573——每个上下文都差一大截，但候选看起来还算正常，
+  极难从输入结果上发现。修正后偏差归零。
+- **整词切分会饿死内部字对**。语料里「我想」作为整词被切走 2471 次，`(我,想)` 这个
+  二元对几乎不存在，KN 于是认为「我像」更常见，`woxiangchuquwan` 出「我像出去玩」。
+  修法：切分时对 2 字以上的词，同时补记其**内部相邻字对**（`intra` 数组），整词路径与
+  单字路径都拿得到统计。
+- **HashMap 随机访问太慢**。一亿 token × 三元查表，`HashMap<u64, u32>` 是 2.4 μs/token，
+  三亿次查表 245 s。改成 `Vec<u64>` 顺序 append + `sort_unstable` + 游程压缩，
+  19.8 s 完成收集与排序，全套降到 34.6 s。
+- **标点必须断链**。断句哨兵 `SEP = u32::MAX` 把「…模型，带来…」断成两条链，否则
+  「模型→带」这类跨标点伪搭配会把「带模型」顶到「大模型」前面。
+
+#### 性能：14.3 → 17.0 ms
+
+三元查表是随机访存，直接把 37 键整句从 14.3 ms 推到 22.9 ms。逐步隔离测量：纯结构
+开销 14.4 ms、`Ctx::prepare` 占 8 ms、`ctx.cost()` 只占 0.8 ms——瓶颈在「准备上下文
+时跳着读」而不是「算概率」。
+
+最终加了两个直映缓存（`ctx_cache` 1<<13 存预热好的 `Ctx`，`cost_cache` 1<<16 存
+`(prev2, prev1, w) → cost`），并把 `Ctx` 的后继列表压进栈上 `[(u32, f32); 4]` 内联数组，
+降到 **17.0 ms**（37 键，候选 21 条），23 键 9.9 ms。
+
+这已经贴着 16.6 ms 帧预算（60Hz）的边。要继续压，方向是「同一前词的后继列表在内存里
+连续」——现在是分组有序表，天然满足，但缓存槽位命中率还不够高。
+
+#### 效果
+
+- 全量用例里**唯一变了的首选**是 `womenyihui`：「我们一会」→「我们也会」。语料里
+  「我们一会」0 次、「我们也会」15 次（书面语写「一会儿」），这是模型对数据的正确
+  反应，「我们一会」仍在第二候选。
+- `woxiangchuquwan` 恢复「我想出去玩」——这是三元引入后自己踩的坑（整词切分饿死内部
+  字对），不是收益，见上面第二个坑。
+- 真正的收益体现在 `trigram_context_sharpens_bigram` 断言的那类：「到达终点 的」
+  三元代价比二元低 0.2 以上，而**没见过的上下文精确退回二元**（不掉分）。
+- 其余 30 余条整句的首选不变——符合预期：`CTX_WEIGHT=1.0` 只在词频接近时说话。
+
+### 语言模型还有一个回归基准：mkbigram
+
+`tools/mkbigram.rs` 与 `wayland-ime/tools/mkbigram.py` 已不在主路径上（`gen-data.sh`
+不再调用，`data/bigram.bin` 已从仓库移除）。它们输出的是上一代二元表，保留下来是为了
+两件事：
+
+1. **二元基线**。要说清「三元到底带来多少收益」，得能重建一版二元模型跑同一批抽样。
+   重建路径：Rust 27.4 s / Python 77.6 s（同一份 5.42M 行语料）。
+2. **互验**。不限 `--top` 时两版输出逐字节相同，这是那份 Python 参考实现的回归第一步。
 
 ```sh
 rustc --edition 2021 -O -o xime-rs/tools/mkbigram xime-rs/tools/mkbigram.rs
-xime-rs/tools/mkbigram --dict xime-rs/data/dict.bin --corpus wiki.txt \
-    --out-map xime-rs/data/val_map.bin --out-bigram xime-rs/data/bigram.bin
-```
-
-**顺带修掉一个统计错误**：两版原来都只在命中词库时产出 token，被跳过的字符（逗号、
-顿号、括号、数字、生僻字）既不产出 token 也不断开，于是「…模型，带来…」被统计成
-`模型→带` 的转移。语料是按句切行的，句内标点非常多，这类跨标点伪搭配能把「带模型」
-顶到「大模型」前面。现在遇到不在词库的字符一律断开转移链（`greedy_segment` 产出
-`None` 断点 / Rust 侧 `prev = None`），pair 种类 18,832,160 → 13,103,014。
-
-**怎么验证等价**：不限 top 时两版输出应逐字节相同，这是回归的第一步。
-
-```sh
 wayland-ime/tools/mkbigram.py --corpus wiki.txt --top 9999999 \
     --out-map /tmp/a.map --out-bigram /tmp/a.bg
 xime-rs/tools/mkbigram      --corpus wiki.txt --top 9999999 \
@@ -907,13 +979,22 @@ xime-rs/tools/mkbigram      --corpus wiki.txt --top 9999999 \
 cmp /tmp/a.bg /tmp/b.bg     # 无输出即一致
 ```
 
-`--top` 生效时两者会有差异，且**不必对齐**：第 100 万名的边界上必然有一批计数相同
-的 pair，Python 的 `Counter.most_common` 按哈希迭代顺序取，Rust 按 `(count, prev, next)`
-取。两边都是合法的「前 100 万」，不能也不需要逐字节对齐。
+`--top` 生效时两者会有差异，且**不必对齐**：第 100 万名的边界上必然有一批计数相同的
+pair，Python 的 `Counter.most_common` 按哈希迭代顺序取，Rust 按 `(count, prev, next)`
+取。两边都是合法的「前 100 万」。
+
+Rust 版比 Python 版快的四个地方，全是「数据搬运」而不是算法：
+
+| | Python 版 | Rust 版 |
+|---|---|---|
+| 语料 | 整个文件读成 5.42M 个 `str` 常驻 | 一次 `read` 成 `Vec<u8>`，线程切 `&str` |
+| 分块 | `Pool.starmap` 把每块的行列表 pickle 进管道 | 分块按字节偏移，线程共享同一份只读切片 |
+| 切分 | 每位置切片出 `str` 再查 dict（命中即分配） | `&str` 零拷贝查表 |
+| 计数 | `Counter[(p, n)]` 元组 | `HashMap<u64, u32>`，key = `(prev<<32)\|next` |
 
 > 顺带纠正一个测试用例：`daimoxing` 断言「大模型」是错的。「大模型」的拼音是
 > `damoxing`；`daimoxing` 能出「大模型」是因为「大」还有 `dài` 读音（大夫），
-> 恰好拼出 `大(dài)+模型`。这条通路依赖 bigram 对 `大→模型` 的评分，换表就翻到
+> 恰好拼出 `大(dài)+模型`。这条通路靠二元表对 `大→模型` 的评分，换表就翻到
 > 「带模型」——现在测试改用正确拼音 `damoxing`（整词路径，代价 5.52，领先 5 个点）。
 
 ---
@@ -975,10 +1056,10 @@ cmp /tmp/a.bg /tmp/b.bg     # 无输出即一致
 | 限制 | 原因 | 影响 |
 |---|---|---|
 | 模糊音只认方言混淆与单键打错 | `fuzzy.rs` 的音节级替换（1 处）+ 编辑距离 1 | 整句漏字母（`zhongou`→中国）、两处以上错误、跨音节的错拼修不出来；见「六点七」 |
-| 上下文只有二元、且是 PMI 口径 | `bigram.bin` 存 `P(词|前词)` 的 PMI 代价，`TRANS_WEIGHT=0.4` 只做微调，没有三元 | 跨词歧义（「及其学习」vs「机器学习」）主要靠词频，靠不住时仍会错 |
+| 语言模型只到三阶，且训练语料偏百科 | `ngram.bin` 是词级 trigram（KN 平滑），上下文代价取「相对一元的差值」 | 需要四阶以上才解得开的长距离结构（`…的…的…`）解不了；`CTX_WEIGHT=1.0` 已开到满，再大就会压过词库的人工提频 |
+| 模型经过剪枝 | 二元 `--min-bigram 3`、三元 `--min-trigram 3`；1310 万种 pair 全存会让二进制再涨 60MB 以上 | 长尾搭配查不到，退回 KN 的 `bow` 估算（平滑值，不是硬惩罚）。常见搭配都在表内，影响集中在生僻专名 |
 | 同音窗口只有 6 条 | `MAX_SAME_KEY`（构建）与 `HITS`（运行）必须一致 | 同一拼音的第 7 个及以后的词等于不存在（如 `yizhi` 取不到「抑制」）；要放宽得同时改两个常量，词库体积线性增长 |
 | 词频语料偏百科 | 存量语料是 2014 年的新闻+字幕，当期语料是维基百科 | 口语词靠存量语料排序（提频设计保证不被百科体压下去），但维基对口语的覆盖本身有限：新出现的口语/网络梗仍要 `extra-words.txt` 人工补 |
-| 转移表只存前 100 万对 | 当期语料切出 1310 万种 pair，按 6 字节/对全存会让二进制 +70MB | 长尾搭配查不到，退回 `BACKOFF=2.0` 的固定惩罚。常见搭配都在表内，实际影响集中在生僻专名 |
 | 简拼只覆盖 2~4 字词 | 索引按词长筛选以控制体积 | 更长的简拼串不生效 |
 | 不记忆用户选择 | 无用户词频学习 | 高频自造词需要写进词表 |
 | 非 US 布局依赖 keymap 解析 | 只取每键前两列 keysym | 需要 AltGr 或三层的符号（如某些欧洲布局）可能取不到 |
@@ -1003,7 +1084,8 @@ cmp /tmp/a.bg /tmp/b.bg     # 无输出即一致
 | 构建期依赖 | gcc、wayland-scanner、libwayland-dev、libxkbcommon-dev | cargo + musl target |
 | 体积 | 2.7MB / 安装 6.7MB | 3.1MB / 安装 7.6MB |
 | 代码量 | 约 2200 行 C | 约 4600 行 Rust（含约 900 行单元测试） |
-| 37 字解码 | 9.32ms | 5.67ms |
+| 37 字解码 | 9.32ms | 17.0ms（14.3 万词库时代是 5.67ms，三元模型花掉了差额） |
+| 语言模型 | 无（纯词频） | 三阶 modified Kneser-Ney，ARPA 回退链 |
 | 移植到新架构 | 交叉编译工具链 | `rustup target add` 即可 |
 
 要**绝对最小的依赖面**（例如不可变镜像、老旧发行版、容器内），选 Rust 版；

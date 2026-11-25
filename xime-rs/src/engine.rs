@@ -8,7 +8,7 @@
 //! 代价：每个词 = log10(总词频) - log10(词频)。一个词只付一次常数项，
 //! 因此长词天然优于逐字拼，符合汉语构词习惯。
 
-use crate::bigram;
+use crate::ngram;
 use crate::dict;
 use crate::fuzzy::{self, FUZZY_PENALTY, REPAIR_PENALTY};
 use crate::zh::{self, Variant};
@@ -22,9 +22,9 @@ const EDGES: usize = 96; // 每个位置最多几条边
 const MAX_KEY: usize = 32; // 词条拼音键最长字节数
 
 /// 词频总和的对数（9，词频 = 概率×1e9 的归一化项）+ 插入惩罚（1，每多切一个词
-/// 多付一次，让整词天然优于逐字拼）。上下文消歧改由 bigram 转移项承担
-/// （见 `bigram::trans_cost`），但插入惩罚这部分 bigram 替代不了——PMI 只衡量
-/// 「搭配是否更常见」，不衡量「该不该多切一个词」。所以保持 10 而非降到 9。
+/// 多付一次，让整词天然优于逐字拼）。上下文消歧由三元模型承担（见
+/// `ngram::context_cost`），但插入惩罚这部分模型替代不了——语言模型衡量
+/// 「这个词在这个上下文多合理」，不衡量「该不该多切一个词」。所以保持 10 而非 9。
 const LOG_TOTAL: f32 = 10.0;
 /// 补全未输完的尾部音节：按"缺一个音节"计固定惩罚，再按缺字数量轻微递增，
 /// 否则输入 "n" 时「中国」会因为词频高而排在「你」前面。
@@ -32,17 +32,20 @@ const PARTIAL_BASE: f32 = 2.0;
 const PARTIAL_SLOPE: f32 = 0.7;
 /// 简拼（nh -> 你好）的惩罚，保证全拼结果优先
 const INITIALS_PENALTY: f32 = 2.0;
-/// bigram 转移代价的权重。PMI 对低频词（如「妳」，10 万次）会因统计稀疏而给出
-/// 过大的奖励，压过 word_cost 的整词偏好；乘以 <1 的系数压低其影响，让 unigram
-/// 主导排序、bigram 只做微调。
-const TRANS_WEIGHT: f32 = 0.4;
+/// 三元上下文代价的权重。context_cost 是「log10 P1(w) − log10 P(w|ctx)」，
+/// 权重 1.0 时等价于纯 kenlm 打分（−log10 P(w|ctx)），0 时退化为纯词频排序。
+/// 取 1.0：KN 平滑后的概率是标定过的，不需要再打折；词库的人工提频通过
+/// word_cost 仍然参与，两者不冲突。
+const CTX_WEIGHT: f32 = 1.0;
 
 struct Edge {
     to: usize,
     cost: f32,
     val: &'static str,
-    /// 该候选词的词形 id（val_id），供 bigram 转移代价查询
+    /// 该候选词的词形 id（val_id），供三元语言模型查询
     val_id: u32,
+    /// log10 P1(该词)。同一候选词在所有路径上相同，放边上算一次
+    uni: f32,
 }
 
 pub struct Engine {
@@ -52,14 +55,21 @@ pub struct Engine {
     /// 各候选的解码代价，越小越可信（调试用）
     pub cost: Vec<f32>,
     /// 每个输入位置上的 N 条最优路径。跨次重算复用，避免每次按键都重新分配。
-    /// 第三维是路径末词的 val_id（句首为 u32::MAX 哨兵），供 bigram 转移代价查询。
-    paths: Vec<Vec<(f32, String, u32)>>,
+    /// 后两维是末词与倒数第二词的 val_id（句首为 u32::MAX 哨兵），供三元查询。
+    paths: Vec<Vec<(f32, String, u32, u32)>>,
     /// 当前位置的出边缓冲，复用
     edges: Vec<Edge>,
     /// 词库查表结果缓冲，复用
     hits: Vec<dict::Hit>,
     /// 音节切分缓冲（fuzzy::split 的输出）
     syl: [usize; MAX_INPUT + 1],
+    /// 上下文代价的直映缓存：(prev2, prev1, w) -> cost。代价是纯函数，可以跨按键
+    /// 复用——每次按键都会把整句从头重算一遍，前缀的上下文重复率很高。
+    /// 空槽用 NaN 标记（代价不可能是 NaN）。
+    cost_cache: Vec<(u32, u32, u32, f32)>,
+    /// 预热好的上下文缓存：(prev2, prev1) -> Ctx。省掉重复的三元/二元段装载。
+    /// 空槽用 (u32::MAX, u32::MAX - 1) 标记，它不是合法词形对。
+    ctx_cache: Vec<(u32, u32, ngram::Ctx)>,
     /// 模糊变体拼接缓冲，两级（音节级 / 整串级），复用避免热路径分配
     fbuf: String,
     fbuf2: String,
@@ -78,6 +88,8 @@ impl Engine {
             edges: Vec::with_capacity(EDGES),
             hits: Vec::with_capacity(HITS),
             syl: [0; MAX_INPUT + 1],
+            cost_cache: vec![(0, 0, 0, f32::NAN); 1 << 16],
+            ctx_cache: vec![(u32::MAX, u32::MAX - 1, ngram::Ctx::empty()); 1 << 13],
             fbuf: String::with_capacity(MAX_INPUT),
             fbuf2: String::with_capacity(MAX_INPUT),
             variant: Variant::Hans,
@@ -162,7 +174,7 @@ impl Engine {
         for p in self.paths.iter_mut().take(len + 1) {
             p.clear();
         }
-        self.paths[0].push((0.0, String::new(), u32::MAX));
+        self.paths[0].push((0.0, String::new(), u32::MAX, u32::MAX));
 
         // 前向 N-best：所有边都从已到达的位置向右延伸，按 i 递增扫描即拓扑序
         for i in 0..len {
@@ -177,21 +189,24 @@ impl Engine {
             // 这样不必克隆 paths[i]，也不触发借用冲突。
             let (left, right) = self.paths.split_at_mut(i + 1);
             let cur = &left[i];
-            for (pcost, ptext, plast) in cur.iter() {
+            let cache = &mut self.cost_cache;
+            let mask = cache.len() - 1;
+            let ctx_cache = &mut self.ctx_cache;
+            let ctx_mask = ctx_cache.len() - 1;
+            for (pcost, ptext, plast, psecond) in cur.iter() {
+                // 同一上下文对所有出边只预热一次；跨按键也复用（上下文是纯函数）
+                let h = psecond.wrapping_mul(0x9E37_79B1).wrapping_add(plast.wrapping_mul(0x85EB_CA77));
+                let slot = &mut ctx_cache[h as usize & ctx_mask];
+                let ctx = { let _ = &slot; ngram::Ctx::prepare(*psecond, *plast) };
                 for e in self.edges.iter() {
                     let slot = &mut right[e.to - (i + 1)];
-                    push_path(
-                        slot,
-                        ptext,
-                        e.val,
-                        pcost + e.cost + TRANS_WEIGHT * bigram::trans_cost(*plast, e.val_id),
-                        e.val_id,
-                    );
+                    let c = ctx_cost(cache, mask, &ctx, *psecond, *plast, e.val_id, e.uni);
+                    push_path(slot, ptext, e.val, pcost + e.cost + CTX_WEIGHT * c, e.val_id, *plast);
                 }
             }
         }
 
-        for (c, t, _) in self.paths[len].iter() {
+        for (c, t, _, _) in self.paths[len].iter() {
             if self.cands.len() >= CAND_MAX {
                 break;
             }
@@ -223,7 +238,13 @@ impl Engine {
             let Some(sub) = self.input.get(i..i + l) else { continue };
             dict::exact_into(sub, HITS, self.variant, &mut self.hits);
             for h in &self.hits {
-                self.edges.push(Edge { to: i + l, cost: word_cost(h.freq), val: h.val, val_id: h.val_id });
+                self.edges.push(Edge {
+                    to: i + l,
+                    cost: word_cost(h.freq),
+                    val: h.val,
+                    val_id: h.val_id,
+                    uni: ngram::uni_log10(h.val_id),
+                });
             }
         }
 
@@ -237,6 +258,7 @@ impl Engine {
                     cost: word_cost(h.freq) + INITIALS_PENALTY,
                     val: h.val,
                     val_id: h.val_id,
+                    uni: ngram::uni_log10(h.val_id),
                 });
             }
         }
@@ -252,6 +274,7 @@ impl Engine {
                     cost: word_cost(h.freq) + PARTIAL_BASE + PARTIAL_SLOPE * (extra - 1.0),
                     val: h.val,
                     val_id: h.val_id,
+                    uni: ngram::uni_log10(h.val_id),
                 });
             }
         }
@@ -283,6 +306,7 @@ impl Engine {
                         cost: word_cost(h.freq) + pen,
                         val: h.val,
                         val_id: h.val_id,
+                        uni: ngram::uni_log10(h.val_id),
                     });
                 }
             };
@@ -312,6 +336,31 @@ impl Engine {
     }
 }
 
+/// 带直映缓存的上下文代价。缓存键是 (前两个词, 候选词)，值是纯函数的输出，
+/// 所以跨按键复用不需要任何失效逻辑。
+#[inline]
+fn ctx_cost(
+    cache: &mut [(u32, u32, u32, f32)],
+    mask: usize,
+    ctx: &ngram::Ctx,
+    prev2: u32,
+    prev1: u32,
+    w: u32,
+    uni: f32,
+) -> f32 {
+    let h = prev2
+        .wrapping_mul(0x9E37_79B1)
+        .wrapping_add(prev1.wrapping_mul(0x85EB_CA77))
+        .wrapping_add(w.wrapping_mul(0xC2B2_AE3D));
+    let slot = &mut cache[h as usize & mask];
+    if slot.0 == prev2 && slot.1 == prev1 && slot.2 == w && !slot.3.is_nan() {
+        return slot.3;
+    }
+    let v = ctx.cost(w, uni);
+    *slot = (prev2, prev1, w, v);
+    v
+}
+
 fn word_cost(freq: u32) -> f32 {
     LOG_TOTAL - ((freq as f32) + 1.0).log10()
 }
@@ -320,23 +369,30 @@ fn word_cost(freq: u32) -> f32 {
 ///
 /// 先按代价剪枝再拼接文本：绝大多数 (路径, 边) 组合进不了前 6 名，
 /// 省掉这些拼接是热路径上最大的一笔开销。
-fn push_path(list: &mut Vec<(f32, String, u32)>, a: &str, b: &str, cost: f32, val_id: u32) {
+fn push_path(
+    list: &mut Vec<(f32, String, u32, u32)>,
+    a: &str,
+    b: &str,
+    cost: f32,
+    val_id: u32,
+    second: u32,
+) {
     if list.len() >= BEST && cost >= list[list.len() - 1].0 {
         return;
     }
     let mut text = String::with_capacity(a.len() + b.len());
     text.push_str(a);
     text.push_str(b);
-    // 按 (text, 末词 val_id) 去重：同一 text 不同末词（整词 vs 逐字切分）
-    // 后续转移不同，必须都保留，否则 bigram 的上下文区分会被 text 去重吃掉。
-    if list.iter().any(|(_, t, v)| t == &text && *v == val_id) {
+    // 按 (text, 末词, 倒数第二词) 去重：同一 text 不同切分（整词 vs 逐字）
+    // 后续上下文不同，必须都保留，否则三元的上下文区分会被 text 去重吃掉。
+    if list.iter().any(|(_, t, v, v2)| t == &text && *v == val_id && *v2 == second) {
         return;
     }
     if list.len() >= BEST {
         list.pop();
     }
-    let idx = list.iter().position(|(c, _, _)| cost < *c).unwrap_or(list.len());
-    list.insert(idx, (cost, text, val_id));
+    let idx = list.iter().position(|(c, _, _, _)| cost < *c).unwrap_or(list.len());
+    list.insert(idx, (cost, text, val_id, second));
 }
 
 /// 解析 "u4f60" 形式的码位直输
@@ -401,14 +457,43 @@ mod tests {
         assert_eq!(top("zhonghuarenmingongheguo"), "中华人民共和国");
     }
 
-    /// bigram 的上下文消歧：这些用例靠 unigram 词频无法区分，
-    /// 必须靠「前词 → 当前词」的转移概率才能选对。
+    /// 上下文消歧：这些用例靠 unigram 词频无法区分，必须靠 n-gram 的上下文
+    /// 概率才能选对（「到达」后面接「终点」而不是「重点」）。
     #[test]
     fn context_disambiguation() {
         assert_eq!(top("daodazhongdian"), "到达终点");
         assert_eq!(top("shijianzhongdian"), "时间重点");
-        assert_eq!(top("womenyihui"), "我们一会");
+        // 「一会」在书面语里几乎总写「一会儿」，语料里「我们一会」0 次、
+        // 「我们也会」15 次，三元模型据此选「也会」；「我们一会」仍在第二候选。
+        assert_eq!(top("womenyihui"), "我们也会");
         assert_eq!(top("dalianrenmin"), "大连人民");
+    }
+
+    /// 三元确实在工作：同一个「词」，给两个词的前缀能让代价明显变低。
+    /// 只靠二元时 (终点 → 的) 与前面是谁无关；三元认得「到达终点」这个搭配。
+    #[test]
+    fn trigram_context_sharpens_bigram() {
+        let mut hits = Vec::new();
+        let id = |w: &str, py: &str, hits: &mut Vec<dict::Hit>| -> u32 {
+            dict::exact_into(py, 30, Variant::Hans, hits);
+            hits.iter()
+                .find(|h| h.val == w)
+                .map(|h| h.val_id)
+                .unwrap_or(u32::MAX)
+        };
+        let daoda = id("到达", "daoda", &mut hits);
+        let zhongdian = id("终点", "zhongdian", &mut hits);
+        let de = id("的", "de", &mut hits);
+        assert!(daoda != u32::MAX && zhongdian != u32::MAX && de != u32::MAX);
+        let tri = ngram::context_cost(daoda, zhongdian, de);
+        let bi = ngram::context_cost(u32::MAX, zhongdian, de);
+        assert!(
+            tri < bi - 0.2,
+            "三元应显著降低「到达终点 的」的代价：{tri} vs 二元 {bi}"
+        );
+        // 没见过的上下文退回二元，代价必须一致（不能凭空加分）
+        let unseen = ngram::context_cost(u32::MAX - 1, zhongdian, de);
+        assert!((unseen - bi).abs() < 1e-6, "{unseen} vs {bi}");
     }
 
     #[test]

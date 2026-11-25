@@ -1,5 +1,11 @@
 //! 用词库贪心切分语料，统计词形 bigram，输出 `val_map.bin` 与 `bigram.bin`。
 //!
+//! > **已被 `tools/mkngram.rs` 取代**：`xime-rs` 的语言模型已升级到三阶
+//! > （modified Kneser-Ney + ARPA 回退链），`scripts/gen-data.sh` 不再调用本工具，
+//! > `data/bigram.bin` 也已从仓库移除。保留它的理由有两条：重建二元基线做 A/B 对比
+//! > （二元 vs 三元到底带来多少收益），以及作为 `wayland-ime/tools/mkbigram.py` 的
+//! > 互验参照——两者不限 `--top` 时逐字节相同。新功能不要往这里加。
+//!
 //! 这是 `wayland-ime/tools/mkbigram.py` 的 Rust 实现，输出格式与语义逐字节一致，
 //! 区别只在速度与内存：
 //!

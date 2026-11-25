@@ -1,4 +1,4 @@
-mod bigram;
+mod ngram;
 mod config;
 mod dict;
 mod en;

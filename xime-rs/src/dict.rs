@@ -10,7 +10,7 @@ use crate::zh::{self, Variant};
 use std::sync::OnceLock;
 
 static RAW: &[u8] = include_bytes!("../data/dict.bin");
-/// 词条 id -> 词形 id（val_id）映射，供 bigram 转移表按「词形」查转移代价。
+/// 词条 id -> 词形 id（val_id）映射，供 ngram 语言模型按「词形」查概率。
 static VAL_RAW: &[u8] = include_bytes!("../data/val_map.bin");
 
 const MAGIC: &[u8; 8] = b"XIMEIM01";
@@ -189,7 +189,7 @@ pub struct Hit {
     pub key_len: usize,
     /// 当前输出形态下是否可见（简体模式下隐藏繁体形词条）
     pub keep: bool,
-    /// 词形 id（val_id），供 bigram 转移表查转移代价；用户词表条目为哨兵 u32::MAX
+    /// 词形 id（val_id），供 ngram 语言模型查概率；用户词表条目为哨兵 u32::MAX
     pub val_id: u32,
 }
 

@@ -163,11 +163,11 @@ xime 单进程                            fcitx5 守护进程（addon 调度）
 | 怎么拿到按键 | 直接 bind `zwp_input_method_v2` 并 `grab_keyboard` | `waylandim` addon 也这么做；也可完全不碰协议，走 DBus 收客户端模块送来的键 |
 | 应用侧要做什么 | 什么都不用（合成器转接 `text-input-v3`） | 要 `GTK_IM_MODULE` / `QT_IM_MODULE` / `XMODIFIERS`，或走 XIM |
 | 候选窗 | 自己画：popup surface + 共享内存 + 8bpp 字形图集 + 软光栅 | ClassicUI 自绘；也可声明 `ClientSideInputPanel` 让客户端画 |
-| 引擎 | 自研 N-best 词网格，14.4 万词条，打分只用词频 | libime：词图 + N-gram 语言模型 + 用户词频学习 + 云拼音 |
+| 引擎 | 自研 N-best 词网格，33.3 万词条，打分 = 词频 + 三阶语言模型（modified KN，ARPA 回退链） | libime：词图 + 三阶语言模型（kenlm 二进制）+ 用户词频学习 + 云拼音 |
 | 覆盖 | Hyprland / sway / KWin 原生；GNOME、XWayland 要加 `--dbus` | 全覆盖（X11、GNOME、XWayland 都能用） |
 | 扩展 | 拼音全拼、简拼、英文前缀补全、简繁 | 双拼、五笔、仓颉、注音、emoji、手写、皮肤…… |
 | 配置 | 命令行参数 + 环境变量 | addon conf + 图形配置工具 |
-| 解码耗时 | 37 字整句逐键重算 5.67 ms | 未做同条件测量，不作比较 |
+| 解码耗时 | 37 字整句逐键重算 17.0 ms（其中约 2.7 ms 花在三阶模型查表） | 未做同条件测量，不作比较 |
 
 ### 4.3 一个实测细节：fcitx5 两条路都修了
 
@@ -242,4 +242,4 @@ xime 的 DBus 前端不碰 Wayland 协议，而是抢下 `org.fcitx.Fcitx5` 与 
 - `xime-rs/README.md`：设计取舍、性能数据、验证方式
 - `xime-rs/docs/fcitx5-dbus-frontend.md`：DBus 协议细节与实测记录
 - `docs/fcitx5-known-issues.md`：fcitx5 侧的已知问题
-- `wayland-ime/`：同一方案的 C 版实现（对照用）
+- `wayland-ime/`：同一方案的 C 版实现（对照用，2026-11 起冻结，不再加新功能）

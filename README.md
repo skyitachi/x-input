@@ -19,7 +19,7 @@
 | 路径 | 说明 |
 |---|---|
 | [`xime-rs/`](xime-rs/README.md) | **Rust 版（主攻）**。纯 Rust 手写 wire 协议 + 手解析 XKB keymap + musl 静态链接，产物 `ldd` 显示 `statically linked`，deb 无硬 `Depends`（Recommends fcitx5 客户端模块供 XWayland）。当前分支 `feat/slint-ui` 候选窗改用 Slint 软件渲染（见 [`docs/slint-ui.md`](docs/slint-ui.md)） |
-| [`wayland-ime/`](wayland-ime/README.md) | **C 版（对照）**。同一方案的首版实现，依赖 libwayland-client / libxkbcommon / libm / libc 四个动态库，代码更短、便于审计 |
+| [`wayland-ime/`](wayland-ime/README.md) | **C 版（冻结对照）**。同一方案的首版实现，依赖 libwayland-client / libxkbcommon / libm / libc 四个动态库，代码更短、便于审计。**自 2026-11 起冻结：不再添加新功能**，只修 bug 与跟随数据格式对齐 |
 | [`docs/`](docs/) | 跨实现文档：全链路原理、应用×合成器兼容矩阵、Slint 迁移、fcitx5 已知问题 |
 | [`fcitx5-preedit-fix/`](fcitx5-preedit-fix/README.md) | fcitx5 空预编辑丢更新的补丁（与 xime 无关，修的是 fcitx5 自身 bug） |
 | [`probe-rs/`](probe-rs/) | Wayland 协议探针（实验性质，用纯 Rust `wayland-backend`，目前为空壳） |
@@ -32,11 +32,14 @@
 | 运行时依赖 | libwayland-client0、libxkbcommon0 等 4 个 `.so` | **无**（静态链接，deb 无硬 Depends） |
 | 构建期依赖 | gcc、wayland-scanner、libwayland-dev、libxkbcommon-dev | cargo + musl target + 系统 CJK 字体 |
 | 二进制体积 | 2.7MB（装 6.7MB） | 3.1MB（装 7.6MB，Slint 分支 15.9MB） |
-| 37 字整句解码 | 9.32ms | 5.67ms |
+| 37 字整句解码 | 9.32ms（14.3 万词库，纯词频） | 17.0ms（33.3 万词库 + 三阶语言模型） |
 | 代码量 | 约 2200 行 C | 约 4600 行 Rust |
+| 后续新功能 | **已冻结，不再添加** | 全部新功能在此推进（新词库、模糊音容错、候选窗形态） |
 
 要**绝对最小的依赖面**（不可变镜像、老旧发行版、容器内）选 Rust 版；要**审计尽可能简单**
-（代码更短）选 C 版。二者能力等价，随时互切（`xime-switch`）。
+（代码更短）选 C 版。两者的协议时序与解码算法同源，但 C 版自 2026-11 起冻结，**能力已不再
+等价**——词库扩充、当期语料、模糊音与拼写错容错都只在 Rust 版里。C 版现在的角色是最小可
+审计的参照实现与回归基准，不是可选的功能对等版本。
 
 ## 快速开始
 
@@ -82,12 +85,15 @@ XWayland / X11 程序 ❌；部分终端（alacritty 等自处理按键的）❌
 | [`docs/slint-ui.md`](docs/slint-ui.md) | `feat/slint-ui` 分支：候选窗从手写软光栅迁移到 Slint 的约束、尺寸/缩放、验证 |
 | [`docs/fcitx5-known-issues.md`](docs/fcitx5-known-issues.md) | fcitx5 自身的问题清单（与 xime 无关），含空预编辑丢更新的根因与补丁 |
 | [`xime-rs/README.md`](xime-rs/README.md) | Rust 版完整说明：零依赖的来龙去脉、三种候选窗形态、主题、英文补全、简繁 |
-| [`wayland-ime/README.md`](wayland-ime/README.md) | C 版完整说明：词库来源、代价模型、协议时序、构建验证 |
+| [`wayland-ime/README.md`](wayland-ime/README.md) | C 版完整说明（已冻结）：词库来源、代价模型、协议时序、构建验证 |
 
 ## 代码约定
 
 - 函数名、测试函数名一律用**英文 snake_case**，不允许中文命名的函数（中文注释、断言消息、
   字符串字面量不受限）。
+- **C 版（`wayland-ime/`）冻结**：不再添加新功能，只接受 bug 修复与数据格式对齐（改
+  `dict.bin` 布局时同步重建 `src/dict_gen.h`）。新能力一律在 `xime-rs/` 实现，不要为
+  「两边对齐」而往 C 版加代码。
 
 ## 协议与数据来源
 
@@ -102,3 +108,6 @@ XWayland / X11 程序 ❌；部分终端（alacritty 等自处理按键的）❌
   [`xime-rs/README.md`](xime-rs/README.md) 的「六点五、扩充词库」。
 - 当期语料是**可选**的：`modern_freq.txt` 不存在时自动退回双源（2014 语料），
   词库仍能构建，只是新词要人工补。流程见「六点六、当期语料」。
+- Rust 版的语言模型（`xime-rs/data/ngram.bin`）也用同一份维基语料统计：三阶
+  modified Kneser-Ney 平滑 + ARPA 回退链，语义与 kenlm 一致，只存概率与回退权重，
+  不分发原文。C 版（冻结）只有词频，没有上下文模型。
