@@ -358,6 +358,70 @@ mod tests {
         assert_eq!(top("zg"), "这个");
     }
 
+    /// 现代词与人工词表：这些词的拼音读法在读音表里有，但语料停在 2014 年、
+    /// 计数只有几十，曾被同音的旧噪声词压住（内眷/汤瓶/甲板/极小）。
+    /// 词表在 wayland-ime/tools/extra-words.txt，改动后要重新生成 dict.bin。
+    #[test]
+    fn modern_vocabulary() {
+        for (input, want) in [
+            ("neijuan", "内卷"),
+            ("tangping", "躺平"),
+            ("chongdianbao", "充电宝"),
+            ("yanzhengma", "验证码"),
+            ("jiaban", "加班"),
+            ("tiaoxiu", "调休"),
+            ("kongtiao", "空调"),
+            ("moyu", "摸鱼"),
+            ("jixiao", "绩效"),
+        ] {
+            assert_eq!(top(input), want, "输入 {input}");
+        }
+    }
+
+    /// 金融与计算机常用词。这两类专业词汇在 2014 年语料里几乎没有计数，
+    /// 同音键上全是噪声（通掌/问当/连表/条式），以前打不出来或排在看不见的位置。
+    /// 词表见 extra-words.txt 的「金融 / 投资」「计算机 / 研发」两段。
+    #[test]
+    fn domain_vocabulary() {
+        for (input, want) in [
+            ("gupiao", "股票"),
+            ("zhangting", "涨停"),
+            ("tongzhang", "通胀"),
+            ("zhisun", "止损"),
+            ("xiongshi", "熊市"),
+            ("caibao", "财报"),
+            ("wendang", "文档"),
+            ("daimoxing", "大模型"),
+            ("tishici", "提示词"),
+            ("weifuwu", "微服务"),
+            ("haxibiao", "哈希表"),
+        ] {
+            assert_eq!(top(input), want, "输入 {input}");
+        }
+    }
+
+    /// 「重写」「重载」在词组读音表里缺条目（重载的条目读 zhòng zài，是「重载列车」
+    /// 那个意思），自动推导按「重」的单字首选音拼，用户打 chongxie 出不来。
+    /// 人工词表补读音后这两个键才算通。
+    ///
+    /// 注意别断言 `zhongxie` 下没有「重写」——逐字合成路径本来就会给出「重(zhòng)
+    /// + 写(xiě)」这个组合，那是字符级输入的正常结果，不是残留的错条目。
+    #[test]
+    fn polyphonic_word_reading_override() {
+        assert_eq!(top("chongxie"), "重写");
+        assert_eq!(top("chongzai"), "重载");
+    }
+
+    /// 单音节键的字数多样性：`yue` 既是单字（月/越/约）也是双字词（余额）。
+    /// 纯按词频取前 N 条时单字会把键占满，「余额」永远进不了候选——这正是
+    /// 用户看到的「基本词没有」。mkdict.py 的 MAX_LEN_CLASSES 负责保证这条。
+    #[test]
+    fn single_syllable_key_keeps_words() {
+        let c = all("yue");
+        assert!(c.iter().any(|x| x == "余额"), "单音节键被单字占满: {c:?}");
+        assert_eq!(c[0], "月");
+    }
+
     #[test]
     fn tail_completion() {
         assert_eq!(top("nih"), "你好");

@@ -93,5 +93,12 @@ XWayland / X11 程序 ❌；部分终端（alacritty 等自处理按键的）❌
 
 - 协议 XML vendored 在 `xime-rs/` 与 `wayland-ime/proto/vendor/`，构建期不再依赖
   `wayland-protocols` 包。
-- 词库全部来自可再分发的 MIT 数据（`mozillazg/pinyin-data`、`phrase-pinyin-data`、
-  `fxsjy/jieba` 词频、`hermitdave/FrequencyWords`），构建期由 `tools/mkdict.py` 编译进二进制。
+- 词库来自可再分发的 MIT 数据（`mozillazg/pinyin-data`、`phrase-pinyin-data`、
+  `fxsjy/jieba` 词频、`hermitdave/FrequencyWords`），外加**清华开放词表**
+  （`thunlp/THUOCL`，MIT，提供「这确实是个词」的证据）和**中文维基百科 dump**
+  （CC BY-SA 4.0，只统计词频、不分发原文）。
+- 还有一份**自带的人工补充词表** `wayland-ime/tools/extra-words.txt`（新词与词频修正），
+  构建期由 `tools/mkdict.py` 编译进二进制。加词流程见
+  [`xime-rs/README.md`](xime-rs/README.md) 的「六点五、扩充词库」。
+- 当期语料是**可选**的：`modern_freq.txt` 不存在时自动退回双源（2014 语料），
+  词库仍能构建，只是新词要人工补。流程见「六点六、当期语料」。
