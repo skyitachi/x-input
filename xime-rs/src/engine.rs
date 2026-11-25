@@ -10,6 +10,7 @@
 
 use crate::bigram;
 use crate::dict;
+use crate::fuzzy::{self, FUZZY_PENALTY, REPAIR_PENALTY};
 use crate::zh::{self, Variant};
 
 pub const MAX_INPUT: usize = 32;
@@ -57,6 +58,11 @@ pub struct Engine {
     edges: Vec<Edge>,
     /// 词库查表结果缓冲，复用
     hits: Vec<dict::Hit>,
+    /// 音节切分缓冲（fuzzy::split 的输出）
+    syl: [usize; MAX_INPUT + 1],
+    /// 模糊变体拼接缓冲，两级（音节级 / 整串级），复用避免热路径分配
+    fbuf: String,
+    fbuf2: String,
     /// 输出形态：简体（默认）/ 繁体
     pub variant: Variant,
 }
@@ -71,6 +77,9 @@ impl Engine {
             paths: Vec::new(),
             edges: Vec::with_capacity(EDGES),
             hits: Vec::with_capacity(HITS),
+            syl: [0; MAX_INPUT + 1],
+            fbuf: String::with_capacity(MAX_INPUT),
+            fbuf2: String::with_capacity(MAX_INPUT),
             variant: Variant::Hans,
         }
     }
@@ -247,6 +256,56 @@ impl Engine {
             }
         }
 
+        // 近似匹配：模糊音（sijian -> shijian）与拼写错（nihap -> nihao）。
+        //
+        // 只在两种情况下动：剩余串能完整切成合法音节（用户打完了，但可能打错），
+        // 或者坏尾确实不是任何音节的前缀（用户不是「还在打字」，是真打错了）。
+        // 所以正常输入——停在完整音节 `ni` 或半截音节 `zhon`——一行都不多跑。
+        // 命中的词带 FUZZY_PENALTY，精确匹配永远排在前面。
+        if rem >= 2 {
+            let sub = &self.input[i..];
+            let variant = self.variant;
+            let mut syl = std::mem::replace(&mut self.syl, [0usize; MAX_INPUT + 1]);
+            let sp = fuzzy::split(sub, &mut syl);
+            let mut hits = std::mem::take(&mut self.hits);
+            let mut fbuf = std::mem::take(&mut self.fbuf);
+            let mut fbuf2 = std::mem::take(&mut self.fbuf2);
+            let edges = &mut self.edges;
+            // 模糊音是「口音」，修复是「猜」，两者惩罚不同（见 fuzzy.rs 的常量）。
+            let pen = if sp.bad.is_none() { FUZZY_PENALTY } else { REPAIR_PENALTY };
+            // 修复后的串长度可能与输入不同（漏打/多打一个字母），但都消费掉
+            // 整个剩余输入，所以 to 恒为 len，不能按 v.len() 算。
+            let mut push = |v: &str| {
+                dict::exact_into(v, HITS, variant, &mut hits);
+                for h in &hits {
+                    edges.push(Edge {
+                        to: len,
+                        cost: word_cost(h.freq) + pen,
+                        val: h.val,
+                        val_id: h.val_id,
+                    });
+                }
+            };
+            match sp.bad {
+                // 整串都是合法音节：每个音节试一次等长的声母/韵母替换
+                None => fuzzy::for_each_variant(sub, &syl, sp.n, &mut fbuf, &mut fbuf2, &mut push),
+                // 坏尾不像任何音节：整段当拼写错去修
+                Some(bad) if !fuzzy::is_syllable_prefix(&sub[bad..]) => {
+                    fuzzy::for_each_repair(sub, bad, &mut fbuf, &mut fbuf2, &mut push)
+                }
+                // 坏尾是音节前缀（像是还在打），但并回上一音节后就不像了：
+                // 说明是上一音节打错，而不是正在输入（nihap -> ni|ha|p -> nihao）
+                Some(_) if sp.n > 0 => {
+                    fuzzy::for_each_tail_repair(sub, &syl, sp.n, &mut fbuf, &mut fbuf2, &mut push)
+                }
+                _ => {}
+            }
+            self.syl = syl;
+            self.hits = hits;
+            self.fbuf = fbuf;
+            self.fbuf2 = fbuf2;
+        }
+
         if self.edges.len() > EDGES {
             self.edges.truncate(EDGES);
         }
@@ -375,6 +434,27 @@ mod tests {
             ("jixiao", "绩效"),
         ] {
             assert_eq!(top(input), want, "输入 {input}");
+        }
+    }
+
+    /// 模糊音与拼写错：打错了也能选出相近的。
+    ///
+    /// 惩罚来自 fuzzy.rs（模糊音 2.0、拼写修复 4.0），所以精确匹配永远排前面——
+    /// 这些用例断言的只是「首选落到对的词上」，不是「模糊结果插到最前」。
+    #[test]
+    fn fuzzy_and_typo_tolerance() {
+        for (input, want) in [
+            ("zongguo", "中国"),   // zh -> z
+            ("sijian", "时间"),    // sh -> s
+            ("lanfang", "南方"),   // n -> l
+            ("chengjing", "曾经"), // ch -> c
+            ("nihap", "你好"),     // 尾键打错
+        ] {
+            assert_eq!(top(input), want, "输入 {input}");
+        }
+        // 精确输入不受影响：模糊匹配只是追加带惩罚的边
+        for (input, want) in [("zhongguo", "中国"), ("shijian", "时间"), ("nanfang", "南方")] {
+            assert_eq!(top(input), want, "精确输入 {input}");
         }
     }
 

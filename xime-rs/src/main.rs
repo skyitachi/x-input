@@ -5,6 +5,7 @@ mod en;
 mod engine;
 mod fcitx_dbus;
 mod font;
+mod fuzzy;
 mod im_state;
 mod keymap;
 mod popup;
