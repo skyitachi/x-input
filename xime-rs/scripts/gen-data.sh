@@ -46,18 +46,44 @@ python3 "$here/scripts/gen-zh.py"
 echo "  英文 -> data/en.bin"
 python3 "$here/scripts/gen-en.py"
 
-# 二元语言模型转移表：需要中文句子语料（scripts/fetch-corpus.sh 下载、
-# scripts/clean-corpus.py 清洗成 corpus.txt）。语料未就绪时跳过——Rust 侧
-# bigram.rs 会退化回 unigram（trans_cost 恒 0），不影响编译与运行。
+# 二元语言模型转移表：需要中文句子语料。mkbigram 自己做词库贪心切分，所以
+# **不需要**预先分词的 corpus.txt——当期维基正文 wiki.txt 直接可用，而且它就是
+# 唯一「当期」的语料（corpus.txt 是 2014 年那批，存在时优先，便于复现旧结果）。
+# 语料未就绪时跳过：Rust 侧 bigram.rs 会退化回 unigram（trans_cost 恒 0），
+# 不影响编译与运行。
 corpus="$src/.cache/corpus/corpus.txt"
+[ -f "$corpus" ] || corpus="$src/.cache/corpus/wiki.txt"
 if [ -f "$corpus" ]; then
-    echo "  bigram -> data/val_map.bin + data/bigram.bin"
-    python3 "$src/tools/mkbigram.py" --dict "$here/data/dict.bin" --corpus "$corpus" \
-        --out-map "$here/data/val_map.bin" --out-bigram "$here/data/bigram.bin"
+    echo "  bigram -> data/val_map.bin + data/bigram.bin（语料 $corpus）"
+    # 优先 Rust 版：同一份 5.4M 行语料，Python 版要跑 78 s 且把整个语料读成
+    # 行列表常驻内存；Rust 版单文件编译（零依赖，不进 cargo）、语料一次读入、
+    # 线程按字节分块共享，27 s 出结果。输出逐字节一致，可用 Python 版校验。
+    mkbg="$here/tools/mkbigram"
+    mkbg_src="$here/tools/mkbigram.rs"
+    use_rust=0
+    if command -v rustc >/dev/null 2>&1; then
+        if [ ! -x "$mkbg" ] || [ "$mkbg_src" -nt "$mkbg" ]; then
+            echo "    编译 tools/mkbigram（rustc）"
+            if rustc --edition 2021 -O -o "$mkbg" "$mkbg_src"; then
+                use_rust=1
+            else
+                echo "    rustc 编译失败，退回 Python 版"
+            fi
+        else
+            use_rust=1
+        fi
+    fi
+    if [ "$use_rust" = 1 ]; then
+        "$mkbg" --dict "$here/data/dict.bin" --corpus "$corpus" \
+            --out-map "$here/data/val_map.bin" --out-bigram "$here/data/bigram.bin"
+    else
+        python3 "$src/tools/mkbigram.py" --dict "$here/data/dict.bin" --corpus "$corpus" \
+            --out-map "$here/data/val_map.bin" --out-bigram "$here/data/bigram.bin"
+    fi
 else
-    echo "  跳过 bigram（没有分词语料；先跑 fetch-corpus.sh + clean-corpus.py，"
-    echo "    或直接用 .cache/corpus/wiki.txt 配 mkbigram.py，见 README「六点六」）"
-    echo "    注意：词库刚变过的话 val_map/bigram 的 val_id 已失效，用"
+    echo "  跳过 bigram（没有语料）"
+    echo "    先跑 $src/scripts/fetch-corpus.sh 拿到维基 dump，再跑 wiki2txt.py；"
+    echo "    词库刚变过的话 val_map/bigram 的 val_id 已失效，用"
     echo "    python3 $src/tools/remap-bigram.py --old-dict <旧> --old-map <旧> \\"
     echo "      --new-dict $here/data/dict.bin --new-map $here/data/val_map.bin \\"
     echo "      --in-bigram <旧> --out-bigram $here/data/bigram.bin"

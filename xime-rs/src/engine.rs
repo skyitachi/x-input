@@ -391,7 +391,7 @@ mod tests {
             ("xiongshi", "熊市"),
             ("caibao", "财报"),
             ("wendang", "文档"),
-            ("daimoxing", "大模型"),
+            ("damoxing", "大模型"),
             ("tishici", "提示词"),
             ("weifuwu", "微服务"),
             ("haxibiao", "哈希表"),

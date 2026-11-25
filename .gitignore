@@ -39,6 +39,8 @@ __pycache__/
 
 # tools/uinput-inject 是 cc 编译产物，源码在 tools/uinput-inject.c
 xime-rs/tools/uinput-inject
+# tools/mkbigram 是 rustc 编译产物，源码在 tools/mkbigram.rs（gen-data.sh 自动编译）
+xime-rs/tools/mkbigram
 
 # ---------- 编辑器 / 系统 ----------
 .DS_Store

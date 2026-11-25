@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """统计词形 bigram，输出 val_map.bin 与 bigram.bin。
 
+本文件是**格式的权威文档**与参考实现；日常构建走 `xime-rs/tools/mkbigram.rs`
+（零依赖、rustc 单文件编译，同一份 5.42M 行语料 27 s vs 本文件 78 s，输出逐字节
+一致，`gen-data.sh` 优先调它）。两份必须同步改：改格式或改切分规则时，先改这里，
+再改 Rust 版，然后用 `--top 9999999` 对两边输出 `cmp`（见 xime-rs/README「六点六」）。
+
 这两个文件与 Rust 侧（xime-rs/src/bigram.rs、xime-rs/src/dict.rs）严格对齐：
 
 val_map.bin（word_id -> val_id，长 = word_count）:
@@ -70,12 +75,17 @@ def build_val_map(rows):
 
 
 def greedy_segment(text, val_set, max_len):
-    """按词库贪心最长匹配切分，返回词形列表（孤立字若不在词库则跳过）。
+    """按词库贪心最长匹配切分，返回词形列表（None 表示断点）。
 
     用词库本身（而非 jieba）切分语料，保证 bigram 统计粒度与 xime 解码
     （词网格、整词优先）一致——否则 jieba 会把「你好吗」「是一个」这类 jieba 有、
     词库没有的长词切成整词，导致「你好→吗」「是→一个」等子词转移统计不足，
     进而让这些高频搭配背上偏高的 trans_cost。
+
+    不在词库的字符（标点、数字、生僻字）产出 None 作**断点**，调用方据此断开
+    转移链。语料按句切行，句内仍有逗号、顿号、括号；不断开的话「模型，带来」
+    会被统计成 模型→带 的高频伪搭配，解码时「带模型」就会凭这条跨标点转移
+    压过「大模型」（实测踩到过）。
     """
     out = []
     i = 0
@@ -87,6 +97,7 @@ def greedy_segment(text, val_set, max_len):
                 i += l
                 break
         else:
+            out.append(None)
             i += 1
     return out
 
@@ -98,12 +109,17 @@ def _count_chunk(lines, val_to_id, max_len):
     unigram = Counter()
     seen = val_to_id.get
     for line in lines:
-        ids = [seen(w) for w in greedy_segment(line, val_to_id, max_len)]
-        for wid in ids:
+        prev = None
+        for w in greedy_segment(line, val_to_id, max_len):
+            if w is None:      # 标点/生僻字：断开转移链
+                prev = None
+                continue
+            wid = seen(w)
             unigram[wid] += 1
-        for p, n in zip(ids, ids[1:]):
-            pair[(p, n)] += 1
-            prev_count[p] += 1
+            if prev is not None:
+                pair[(prev, wid)] += 1
+                prev_count[prev] += 1
+            prev = wid
     return pair, prev_count, unigram
 
 
