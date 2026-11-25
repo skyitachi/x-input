@@ -15,6 +15,26 @@ src=${XIME_SRC:-$here/../wayland-ime}
 
 mkdir -p "$here/data"
 
+# 近期语料词频：维基 dump -> wiki.txt -> modern_freq.txt。
+# mkdict.py 的三套词频源里，只有这一套是当期（其余两套停在 2014 年前后），
+# 新词能不能排上去全看它。dump 不存在就跳过，mkdict 自动退回双源混合。
+dump="$src/.cache/corpus/zhwiki-latest-pages-articles.xml.bz2"
+wiki_txt="$src/.cache/corpus/wiki.txt"
+modern="$src/.cache/dict/modern_freq.txt"
+if [ -f "$dump" ]; then
+    if [ ! -s "$wiki_txt" ] || [ "$dump" -nt "$wiki_txt" ]; then
+        echo "  语料 -> .cache/corpus/wiki.txt（全量约 20 分钟）"
+        # stride=6 是均匀降采样：dump 按页面 ID 排序，截断会丢掉最新条目
+        python3 "$src/tools/wiki2txt.py" --jobs 8 --stride 6
+    fi
+    if [ ! -s "$modern" ] || [ "$wiki_txt" -nt "$modern" ]; then
+        echo "  近期词频 -> .cache/dict/modern_freq.txt"
+        python3 "$src/tools/mkmodernfreq.py" --dict "$here/data/dict.bin"
+    fi
+else
+    echo "  跳过近期词频（没有维基 dump；先跑 $src/scripts/fetch-corpus.sh）"
+fi
+
 echo "  词库 -> data/dict.bin"
 python3 "$src/tools/mkdict.py" --bin "$here/data/dict.bin"
 
@@ -35,7 +55,12 @@ if [ -f "$corpus" ]; then
     python3 "$src/tools/mkbigram.py" --dict "$here/data/dict.bin" --corpus "$corpus" \
         --out-map "$here/data/val_map.bin" --out-bigram "$here/data/bigram.bin"
 else
-    echo "  跳过 bigram（语料未就绪；先跑 fetch-corpus.sh + clean-corpus.py）"
+    echo "  跳过 bigram（没有分词语料；先跑 fetch-corpus.sh + clean-corpus.py，"
+    echo "    或直接用 .cache/corpus/wiki.txt 配 mkbigram.py，见 README「六点六」）"
+    echo "    注意：词库刚变过的话 val_map/bigram 的 val_id 已失效，用"
+    echo "    python3 $src/tools/remap-bigram.py --old-dict <旧> --old-map <旧> \\"
+    echo "      --new-dict $here/data/dict.bin --new-map $here/data/val_map.bin \\"
+    echo "      --in-bigram <旧> --out-bigram $here/data/bigram.bin"
 fi
 
 font=$(sh "$src/scripts/find-font.sh") || {

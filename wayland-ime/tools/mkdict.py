@@ -7,6 +7,9 @@
   jieba_dict.txt      词频，偏新闻/书面语料
   zh_freq_50k.txt     词频，来自 OpenSubtitles，偏口语（简繁混杂，约 3% 繁体计数）
 
+另有人工词表 tools/extra-words.txt：读音表和语料都没有的新词（小程序、蓝牙耳机、
+涨薪），以及词频被同音旧词压住的词（加班 被 甲板 压住），只能人工补并指定词频。
+
 为什么要把两套词频混起来：单用 jieba 时「你好」只有 725 次，「号码」却有 8000 次，
 于是 "nihaoma" 会被解成「你/号码」；口语语料里「你好」有 5 万次，混合后才符合直觉。
 
@@ -26,14 +29,56 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, ".cache", "dict")
 OUT = os.path.join(ROOT, "src", "dict_gen.h")
 
-MAX_SAME_KEY = 12           # 同一拼音最多保留多少候选
+MAX_SAME_KEY = 6            # 同一拼音最多保留多少候选（必须与 engine.rs 的 HITS 一致）
+MAX_LEN_CLASSES = 3         # 同一键内优先保证几个不同字数各有一条
 MAX_INITIALS_WORDS = 32000  # 简拼索引最多收录多少词条
 MAX_INI_PER_KEY = 4         # 同一简拼串保留几个候选（nh -> 你好/南海/女孩/...）
 
+# 各字数的收录词频门槛。
+#
+# 这些值以前是 {2: 400, 3: 250, 4: 500, 5: 1200, 6: 2500}，直接按语料计数卡，
+# 结果是**所有 2014 年之后出现的词都进不来**：语料里「内卷/躺平/破防/充电宝/
+# 直播间/小程序」的计数只有几十甚至 0，而它们的拼音读法在
+# phrase-pinyin-data 里是齐的。门槛该挡的是长尾噪声，不是新词，所以把底压到很低。
+MIN_FREQ = {2: 40, 3: 30, 4: 40, 5: 120, 6: 300}
+
+# 语料里完全没有、但读音表里有的词，给的先验词频（低于真实高频词、高于噪声）
+NO_CORPUS_FREQ = {2: 60, 3: 45, 4: 40, 5: 30, 6: 20}
+
+# 「常用字」秩：仅靠读音表、没有语料证据的词，必须全部由常用字组成才收录。
+#
+# 门槛放低之后，读音表里的词条会整批涌进来，其中大量是cc-cedict 式的生僻词与
+# 音译碎片（阿梨诃咃、暗灰鹃鵙、挨挨拶拶）。它们对输入法毫无价值，还会让词库
+# 从 4.3MB 涨到 10.7MB。用「组词用字是否都在常用字表内」作筛子：充电宝/内卷/
+# 直播间 全由常用字构成，照收；诃/咃/鹃/鵙/拶 这类字构成的词一律不要。
+# 3500 对应《通用规范汉字表》一级字表的规模。
+COMMON_CHAR_RANK = 3500
+
 # 两套语料的权重：输入法更偏口语，但书面词也不能丢
+# 词频源权重。前两套是 2014 年前后的存量语料（新闻 + 字幕），第三套是当期
+# 维基百科（tools/mkmodernfreq.py 生成）。
+#
+# 三者不是线性混合，而是「存量语料管排序，现代语料只管提频」——原因是一个
+# 实测出来的坑：线性混合（曾试过 0.28/0.32/0.40）会让百科体语料把口语词压下去。
+# 例：「年假」在字幕源里 1487 次、在维基里 462 次，混合后输给了同音的「年甲」
+# (751)，用户打 nianjia 首选变成垃圾词。维基是百科体，它的分布本来就不是
+# 「人会输入什么」的模型，权重给多大都不合适。
+#
+# 现在的做法：先算存量语料的概率，现代语料只在更高时才覆盖它。
+#   prob = max(prob_old, W_MODERN * prob_modern)
+# 好处是单调——现代语料只能把词往前提，不可能把已有词挤下去，所以换语料
+# 不会造成排序回归；新词（存量计数为 0）凭现代计数进来，这正是要的效果。
 W_JIEBA = 0.45
 W_SUB = 0.55
+W_MODERN = 1.0
+# 提频门槛：现代语料要明显更看好这个词才覆盖（至少 2 倍）。
+# 卡掉的是「差一点点」的情况——那多半是百科体和口语体的题材差异，不是词真的
+# 变常用。实测：不设门槛时「年甲」靠维基的 751 次越过字幕源的「年假」1487 次，
+# 用户打 nianjia 首选就变成生僻词；设 2 倍门槛后这类小幅波动全部消失，
+# 而存量语料完全没有计数的新词（内卷/充电宝/大模型）照进不误。
+MODERN_MARGIN = 2.0
 PROB_SCALE = 1e9            # 概率放大成整数词频
+MODERN_FREQ = "modern_freq.txt"  # .cache/dict/ 下，由 tools/mkmodernfreq.py 生成
 
 # 纯辅音音节（嗯/呒的方言读音）不做独立词条：输入 "m" 时应当补全成「吗」而不是「呒」
 CONSONANT_ONLY = {"m", "n", "ng", "hm", "hng"}
@@ -157,16 +202,26 @@ def make_norm():
 
 
 def load_freq():
-    """两套语料按概率混合，返回 {词: 整数词频}。
+    """三套语料按概率混合，返回 {词: 整数词频}。
 
     混合前先做简繁归一：繁体形计数（什麼/裏/後…）合并到简体主形，
     同形异体（著/甚）在替换形计数占优时归并到规范写法。这样繁体词频
     不会虚高，词库里也几乎不再出现繁体形词条（gen-zh.py 的 trad 位图
     只剩零星兜底）。
+
+    第三套是 modern_freq.txt（tools/mkmodernfreq.py 从维基百科最新 dump
+    统计）。前两套都停在 2014 年前后，新词计数为 0 是结构性的；补上当期
+    语料后，「内卷/躺平/大模型/直播间」凭真实出现次数就能进来，不必再靠
+    extra-words.txt 人工估频。
+
+    现代语料是**提频**不是混合（见 W_MODERN 处的注释）：只在新值更高时覆盖，
+    保证换语料不会让任何已有词往下掉。文件不存在时退回 0.45/0.55 双源。
     """
     norm = make_norm()
     jieba = load_counts("jieba_dict.txt")
     sub = load_counts("zh_freq_50k.txt")
+    modern = load_counts(MODERN_FREQ)
+
     tj = sum(jieba.values()) or 1
     ts = sum(sub.values()) or 1
     prob = defaultdict(float)
@@ -174,6 +229,32 @@ def load_freq():
         prob[norm(w)] += W_JIEBA * c / tj
     for w, c in sub.items():
         prob[norm(w)] += W_SUB * c / ts
+
+    if modern:
+        tm = sum(modern.values()) or 1
+        # 两套语料的总量口径不同，直接比较概率会把现代语料整体抬高一截
+        # （「年甲」751 次就压过了字幕源里 1487 次的「年假」）。刻度不靠拍常量，
+        # 用两套语料都有的中频词做基准，取比值中位数当换算系数：
+        # 这样「现代语料只是另一份语料」而不是「更权威的语料」。
+        shared = []
+        for w, c in modern.items():
+            if c < 50:
+                continue
+            o = prob.get(norm(w), 0.0)
+            if o > 0:
+                shared.append(o / (c / tm))
+        alpha = 1.0
+        if len(shared) >= 500:
+            shared.sort()
+            alpha = shared[len(shared) // 2]
+            print(f"  现代语料刻度系数 {alpha:.3f}（{len(shared)} 个共有词取中位数）")
+        for w, c in modern.items():
+            w = norm(w)
+            v = W_MODERN * alpha * c / tm
+            # 只提不压，且要明显更好才覆盖（见 MODERN_MARGIN）
+            o = prob.get(w, 0.0)
+            if o <= 0.0 or v > o * MODERN_MARGIN:
+                prob[w] = v
     return {w: max(1, min(int(p * PROB_SCALE), 0xFFFFFFFF)) for w, p in prob.items()}
 
 
@@ -182,11 +263,116 @@ def is_han(ch):
     return 0x3400 <= o <= 0x4DBF or 0x4E00 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF
 
 
+EXTRA_WORDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extra-words.txt")
+EXTRA_DEFAULT_FREQ = 50000
+
+THUOCL_DIR = os.path.join(CACHE, "thuocl")
+
+# 清华开放词表命中、但语料里没有计数的词，给这个先验词频。
+# 取值落在「刚好进候选窗、压不过真实高频词」的区间（词库中位数约 254，
+# 前 10% 约 2300）。领域词表只负责证明「这是个词」，排序仍交给语料。
+THUOCL_FREQ = {2: 300, 3: 250, 4: 200, 5: 120, 6: 80}
+
+
+def load_thuocl():
+    """读清华开放词表（THUOCL，MIT License），返回 {词: 命中的词表个数}。
+
+    它的价值不是词频——各表的计数是领域内排名，量级不可比（财经 190 万、
+    汽车 1.7 万）。价值在于「这个字串确定是一个词」：IT 1.6 万、财经 3800、
+    医学 1.9 万、法律 9900，这些词的读音在 phrase-pinyin-data 里往往齐全，
+    只是语料里没计数。有了这份证据，build_rows 就不会把它们当长尾噪声丢掉。
+    """
+    if not os.path.isdir(THUOCL_DIR):
+        return {}
+    out = {}
+    for name in sorted(os.listdir(THUOCL_DIR)):
+        if not name.endswith(".txt"):
+            continue
+        with open(os.path.join(THUOCL_DIR, name), encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split()
+                if not parts:
+                    continue
+                w = parts[0].lstrip("\ufeff")
+                if 2 <= len(w) <= 6 and all(is_han(c) for c in w):
+                    out[w] = out.get(w, 0) + 1
+    return out
+
+
+def load_extra_words(pinyins, phrases):
+    """读人工补充词表（extra-words.txt），格式：词 <TAB> 拼音 <TAB> 词频。
+
+    为什么需要人工词表，两套语料都替不了：
+
+    1. **没有**：小程序 / 蓝牙耳机 / 涨薪 这类词在读音表和语料里都不存在，
+       任何自动推导都补不上。
+    2. **有但排不上**：语料是 2014 年前的，新词只有几十次计数，同音的旧噪声词
+       却有几千次（「加班」输给「甲板」、「简历」输给「建立」、「内卷」输给
+       「内眷」）。计数口径无法区分「新词」与「罕见词」，只能人工给词频。
+
+    拼音可省略（自动取词组读音表，再退回单字首选音），词频可省略（取
+    EXTRA_DEFAULT_FREQ）。词频与已有词条取大，所以本表只能提频、不能降频——
+    给一个常见词随手填个数不会把它的排名弄坏。
+    """
+    if not os.path.exists(EXTRA_WORDS):
+        return []
+    rows, warn = [], 0
+    with open(EXTRA_WORDS, encoding="utf-8") as f:
+        for ln, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            parts = line.split("\t")
+            word = parts[0].strip()
+            L = len(word)
+            if not word or not all(is_han(c) for c in word):
+                print(f"  {EXTRA_WORDS}:{ln} 词形不合法，跳过：{line!r}", file=sys.stderr)
+                warn += 1
+                continue
+            try:
+                # 第 2、3 列顺序随意：纯数字当词频，其余当拼音
+                pinyin, freq = "", EXTRA_DEFAULT_FREQ
+                for extra in parts[1:]:
+                    e = extra.strip()
+                    if not e:
+                        continue
+                    if e.isdigit():
+                        freq = int(e)
+                    else:
+                        pinyin = e
+            except ValueError:
+                print(f"  {EXTRA_WORDS}:{ln} 词频不是整数，跳过：{line!r}", file=sys.stderr)
+                warn += 1
+                continue
+            if pinyin:
+                readings = pinyin.replace(",", " ").split()
+            elif word in phrases and len(phrases[word]) == L:
+                readings = phrases[word]
+            else:
+                readings = [pinyins[c][0] for c in word if c in pinyins]
+            if len(readings) != L:
+                print(f"  {EXTRA_WORDS}:{ln} 「{word}」拿不到逐字读音，请手写第二列", file=sys.stderr)
+                warn += 1
+                continue
+            keys = [toneless(r) for r in readings]
+            if any(not re.match(r"^[a-z]{1,6}$", k) or k in CONSONANT_ONLY for k in keys):
+                print(f"  {EXTRA_WORDS}:{ln} 「{word}」读音不合规：{keys}", file=sys.stderr)
+                warn += 1
+                continue
+            rows.append(("".join(keys), word, freq, "".join(k[0] for k in keys), L))
+    if warn:
+        print(f"  人工词表：{len(rows)} 条可用，{warn} 条被跳过")
+    return rows
+
+
 def build_rows():
     pinyins = load_pinyin()
     phrases = load_phrases()
     freqs = load_freq()
     norm = make_norm()
+    thuocl = load_thuocl()
+    if thuocl:
+        print(f"  领域词表 {len(thuocl)} 个词（THUOCL）")
 
     # 1) 单字：只在词频表里出现过的字才收录，避免生僻字把图集撑大
     char_freq = {w: n for w, n in freqs.items() if len(w) == 1 and is_han(w)}
@@ -208,19 +394,42 @@ def build_rows():
                     continue
             char_rows.append((key, ch, max(1, n >> (rank * 2))))
 
-    # 2) 词组：收 2~6 字。长词要求更高词频，避免长尾词把候选窗塞满
-    min_freq = {2: 400, 3: 250, 4: 500, 5: 1200, 6: 2500}
+    # 2) 词组：收 2~6 字。门槛见 MIN_FREQ——只挡长尾，不挡新词
+    min_freq = MIN_FREQ
 
-    def word_freq(word):
+    # 常用字表：字频降序取前 COMMON_CHAR_RANK 个。用来筛掉纯读音表带来的生僻词。
+    common_chars = set()
+    for ch, _ in sorted(char_freq.items(), key=lambda kv: -kv[1])[:COMMON_CHAR_RANK]:
+        common_chars.add(ch)
+
+    def clean_word(word):
+        """没有语料证据的词，必须全部由常用字组成；有证据的照收（可能是专名）。"""
+        return all(c in common_chars for c in word)
+
+    def word_freq(word, L):
         n = freqs.get(word, 0)
+        floor = NO_CORPUS_FREQ.get(L, 10)
+        # 领域词表命中：语料没计数时给一个「进得了候选窗」的底。
+        # 只提频、不改收录条件——THUOCL 里的生僻字词（医学/法律长尾）
+        # 仍要过 clean_word，否则图集会被这些字撑大。
+        if word in thuocl:
+            floor = max(floor, THUOCL_FREQ.get(L, 100))
         if n:
-            return n
+            # 语料里只要有计数就是"存在证据"，但 2014 年之后的词计数往往只有几十，
+            # 低于门槛就被砍掉了。这里把计数抬到字数对应的底，让「内卷/躺平/验证码」
+            # 这类词凭"出现过"进入词库，排序仍由真实计数决定。
+            #
+            # 底必须 >= 收录门槛，否则「有证据」也白搭：NO_CORPUS_FREQ 的 5/6 字档
+            # 原本是 30/20，而 MIN_FREQ 是 120/300——「存款准备金」在维基里出现 4 次、
+            # 抬到 30 之后仍然过不了 120，直接被丢掉。两处口径必须对齐。
+            return max(n, floor, MIN_FREQ.get(L, 10))
         # 语料里没有的词（新词、专业词）用"最冷字的字频"做先验，
-        # 否则「中国人」这类词会因为没进语料而输给「中国/任」这种偶然切分
+        # 否则「中国人」这类词会因为没进语料而输给「中国/任」这种偶然切分。
+        # 全无先验时退回按字数给的固定底，保证「充电宝」这类后造词不会消失。
         known = [char_freq[c] for c in word if c in char_freq]
         if len(known) != len(word):
-            return 0
-        return max(1, int(0.02 * min(known)))
+            return floor
+        return max(floor, int(0.02 * min(known)))
 
     ph_rows = []
     for word, readings in phrases.items():
@@ -232,8 +441,11 @@ def build_rows():
             continue
         if len(readings) != L:
             continue
-        n = word_freq(word)
+        n = word_freq(word, L)
         if n < min_freq[L]:
+            continue
+        # 光有读音、没有语料证据的词，还要求全由常用字组成（挡生僻词与音译碎片）
+        if word not in freqs and not clean_word(word):
             continue
         keys = [toneless(r) for r in readings]
         if any(not re.match(r"^[a-z]{1,6}$", k) for k in keys):
@@ -242,14 +454,23 @@ def build_rows():
             continue
         ph_rows.append(("".join(keys), word, n, "".join(k[0] for k in keys), L))
 
-    # 3) 词组表没覆盖、但语料里有的词：用单字首选读音兜底（只收较高频的）
+    # 3) 词组表没覆盖、但语料里有的词：用单字首选读音兜底。
+    #    这条路径的读音是按单字首选音拼的，多音字会拼错（银行 -> yinxing），
+    #    所以只收语料里有真实高频证据的词，且门槛不放水——低门槛只用于读音表路径。
     covered = set(phrases)
+    # 人工词表里的词，读音由人给定，比单字首选音可靠。这里必须把它们排掉，
+    # 否则同一个词会同时挂在两个键上：「重写」既按单字音进了 zhongxie（错，
+    # 重=zhòng），又按人工读音进 chongxie（对），用户打 chongxie 反而找不到。
+    manual = load_extra_words(pinyins, phrases)
+    manual_forms = {row[1] for row in manual}
     extra_rows = []
     for word, n in freqs.items():
         L = len(word)
-        if L < 2 or L > 4 or word in covered or n < min_freq[L]:
+        if L < 2 or L > 4 or word in covered or word in manual_forms or n < min_freq[L]:
             continue
         if not all(is_han(c) for c in word):
+            continue
+        if not clean_word(word):
             continue
         keys, ok = [], True
         for ch in word:
@@ -268,15 +489,16 @@ def build_rows():
     merged = [(key, ch, n, key[0], 1) for key, ch, n in char_rows]
     merged.extend(ph_rows)
     merged.extend(extra_rows)
+    merged.extend(manual)
 
-    seen = set()
-    uniq = []
+    # 去重时按词频取大：人工词表给某词提频（如「简历」压过「建立」）要能生效，
+    # 而不是被先出现的语料行遮掉
+    best = {}
     for row in merged:
         ident = (row[0], row[1])
-        if ident in seen:
-            continue
-        seen.add(ident)
-        uniq.append(row)
+        if ident not in best or row[2] > best[ident][2]:
+            best[ident] = row
+    uniq = list(best.values())
 
     by_key = defaultdict(list)
     for row in uniq:
@@ -284,7 +506,27 @@ def build_rows():
     final = []
     for rows in by_key.values():
         rows.sort(key=lambda r: -r[2])
-        final.extend(rows[:MAX_SAME_KEY])
+        # 同一拼音键内的「字数多样性」。
+        #
+        # 键是拼音串，"yue" 既可以是单字（月/越/约）也可以是双字词（余额/豫鄂）。
+        # 单字的词频比词组高一个量级，纯按词频取前 N 条时整个键会被单字占满，
+        # 余额这类词永远进不了候选——用户看到的就是「基本词没有」。
+        # 所以先保证每个字数类各留一条最好的，再按词频补满剩余槽位。
+        # 只对「同键存在多种字数」的情况生效：像 "yizhi" 全是双字词，行为不变。
+        picked, have_len = [], set()
+        for r in rows:
+            if len(picked) >= MAX_SAME_KEY:
+                break
+            if r[4] not in have_len and len(have_len) < MAX_LEN_CLASSES:
+                picked.append(r)
+                have_len.add(r[4])
+        for r in rows:
+            if len(picked) >= MAX_SAME_KEY:
+                break
+            if r not in picked:
+                picked.append(r)
+        picked.sort(key=lambda r: -r[2])
+        final.extend(picked[:MAX_SAME_KEY])
     final.sort(key=lambda r: (r[0], -r[2]))
 
     syllables = set()
