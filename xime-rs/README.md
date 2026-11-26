@@ -109,12 +109,36 @@ Wayland 应用一样，不需要额外适配。
 | Alacritty | ❌ | 上游明确把 IME 列为 non-goal（PR #7289 被拒） |
 | xterm / 跑在 XWayland 下的终端 | ❌ | X11 路径，需要 XIM 前端 |
 
-实测步骤（Hyprland + foot 1.28）：
+实测步骤（Hyprland + foot）：
 
 ```sh
 pkill fcitx5                 # 席位一山不容二虎，必须先腾出来
-xime --verbose &             # 看日志确认 "activate" 与 "keymap 已解析"
+xime-both                    # 或 systemctl --user enable --now xime.service（崩溃自启 + 日志进 journal）
 # 在 foot 里直接打 nihao，候选窗应贴着光标出现
+```
+
+**2026-11-26 复测结论（Hyprland 0.56.2 + foot 1.28.0 `+ime` + xime 0.3.0）[实测]**：
+
+| 项 | 结果 |
+|---|---|
+| 协议 | 走 `zwp_input_method_manager_v2` + `zwp_text_input_manager_v3`（foot 用 v3，日志 `content_type ... purpose=13`） |
+| 预编辑 | foot 自己渲染带下划线的 `nihao` |
+| 候选窗 | 独立 popup surface，贴在光标下方，6 条 + `‹ ›` 翻页箭头 |
+| 上屏 | 空格提交「你好」，落盘字节 `e4 bd a0 e5 a5 bd` |
+| 翻页 | `=` 翻到第 2 页（转/赚/专/转股/传/砖），`-` 回上一页 |
+| 拼写容错 | `nihap` 的首选仍是「你好」 |
+| 按键回注 | `Ctrl+C` 原样进终端，`cat` 被终止 |
+
+完整记录与截图见 [`../docs/xime-app-matrix.md`](../docs/xime-app-matrix.md) 第八节。
+
+自动化测试注意：**不要用 `wtype` 注入**。它会创建 `zwp_virtual_keyboard_v1` 并上传自己生成的
+最小 keymap（约 1.6 KB），合成器把这份 keymap 转发给正在抓键盘的 xime，而 `keymap.rs` 的解析器
+要求至少 20 个可解析键位（`filled < 20` 即放弃），于是回退到旧 keymap、键码错位，终端里会出现
+`^[[1234` 之类的乱码。改用 [`tools/uinput-send.py`](tools/uinput-send.py) 通过 `/dev/uinput`
+造临时键盘（本机 `crw-rw-rw-`，不需要 root），按键就与真人敲击等价：
+
+```sh
+python3 tools/uinput-send.py text:nihao sleep:1.2 shot:/tmp/preedit.png space enter
 ```
 
 `--check` 现在会直接告诉你两件最容易踩的事：

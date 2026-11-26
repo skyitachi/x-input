@@ -2,7 +2,17 @@
 
 > 目的：回答「Hyprland 和当前 KDE 下，WorkBuddy / 微信 / Chrome / Konsole 到底能不能用 xime」。
 > 依据分级标注：**[实测]** 本机跑出来的、**[源码]** 代码或上游提交、**[推断]** 由前两者推得、**[未验证]**。
-> 日期：2026-11-20（末次复验 21:2x，KDE 侧四应用全通）。
+> 日期：2026-11-20（末次复验 21:2x，KDE 侧四应用全通）；2026-11-26 增补 Hyprland × foot 实测。
+
+> ⚠️ **2026-11-26 更新（必读，旧结论已变）**
+>
+> `xime-both` 落地后，本文原本「必须清掉 `QT_IM_MODULE` / `GTK_IM_MODULE` 并重新登录」的结论
+> **已经作废**。现在 Wayland 前端与 DBus 前端并行运行：设了 IM 变量的 Qt/GTK/XWayland 应用由
+> DBus 前端（抢 `org.fcitx.Fcitx5` 服务名）接住，Wayland 原生应用照旧走 `zwp_text_input_v3`。
+> 结果是**变量不用清，也不需要为清变量重登**；`xime-setup` 反而会把旧版注释掉的变量恢复回来
+> （见 `xime-setup` 的 `kde_env_fix()` 与 `xime-rs/README.md`「环境变量」一节）。
+> 下文仍保留 2026-11-20 的原始现场记录（它们是当时的事实），但凡涉及「清 IM 变量」的段落
+> 都已标注「已作废」，不要照着做。
 
 ---
 
@@ -15,9 +25,11 @@
 | **Chrome** | Chromium 158，Wayland 原生 | ✅ 可用（Chromium 自己实现 text-input-v3，不依赖 GTK 模块）**[推断]** | ✅ 可用 **[实测]**，连环境变量都不用清 |
 | **Konsole** | Qt6 25.12，Wayland 原生 | ✅ 可用（需清 `QT_IM_MODULE`） | ✅ 可用 **[实测]**，前提是清 `QT_IM_MODULE`（会话级，需重登生效） |
 | **WorkBuddy** | Electron 37 / Chromium 138，**已改为 Wayland 原生** | ⚠️ 推断可用（同 Chrome 路径，v2 前端下待验证） | ✅ **实测通过**：`xlsclients` 无记录、`activeClientSupportsTextInput=true` |
-| **微信** | 4.1.13.26，Wayland 原生，实际走 **text-input-v2** | ⚠️ 推断可用（Hyprland 是否通告 v2 待确认） | ✅ **实测通过**：候选窗弹出、空格上屏「你好」；前提是清掉 IM 变量 |
+| **微信** | 4.1.13.26，Wayland 原生，实际走 **text-input-v2** | ⚠️ 推断可用（Hyprland 是否通告 v2 待确认） | ✅ 可用：由 `xime-both` 的 DBus 前端接住（已实测上屏「你好」）；2026-11-20 那条「必须清 IM 变量」的前提在 `xime-both` 下不再需要 |
+| **foot 1.28** | 终端，Wayland 原生，`+ime` | ✅ **实测通过（2026-11-26）**：预编辑、候选窗、翻页、拼写容错、`Ctrl+C` 回注全通，见第八节 | ✅ 可用（同一套 `text-input-v3`，机制无差别） **[推断]** |
 
 一句话：**KDE 下四个应用全部打通——Chrome / Konsole / 微信 / WorkBuddy 均已实测建立了 text-input 通道。** 共同规律是：能不能连上 text-input，取决于**该应用启动那一刻的环境变量与图形后端**，不是合成器本身。
+Hyprland 侧到 2026-11-26 已有第一个**端到端**实测样本：foot（第八节）。
 
 ### 1.1.1 「为什么只有 Chrome 能用」（2026-11-20 实测定论）
 
@@ -68,17 +80,22 @@
 任何一个应用要用 xime，必须同时过三关。任何一关不过，症状都是「打得进英文字母」，而不是报错。
 
 ```
-① 应用层：有没有创建 zwp_text_input_v3 上下文？
-   ├─ Wayland 原生 + 未设 QT_IM_MODULE/GTK_IM_MODULE → 有
+① 应用层：有没有创建 text-input 上下文？
+   ├─ Wayland 原生 + 未设 QT_IM_MODULE/GTK_IM_MODULE → 有（v3；个别程序如微信用 v2）
    ├─ 设了 IM 变量（哪怕应用是 Wayland 原生）      → 没有（改走 fcitx DBus 模块）
    └─ XWayland（X11 窗口没有 wl_surface）          → 没有，且无法有
 ② 合成器层：有没有 input_method 协议把按键交给 xime？
    ├─ Hyprland / sway / labwc → zwp_input_method_v2（xime 当普通客户端起）
    └─ KWin 6.6               → zwp_input_method_v1（必须由 KWin 拉起）
 ③ 前端层：xime 起的是哪条路？
-   ├─ 原生（默认）→ 只覆盖 ① 里「有」的那批
-   └─ --dbus      → 只覆盖 ① 里「没有」的那批（且要求 IM 变量存在）
+   ├─ 只有原生前端 → 只覆盖 ① 里「有」的那批
+   └─ xime-both（原生 + DBus 并行）→ ① 的两种情况都被覆盖：
+      「有」的走原生，「没有」的由 DBus 前端接住
 ```
+
+> **2026-11-26 起，① 这一关不再是死路。** 以前它是一票否决（设了 IM 变量就没救），
+> 现在 `xime-both` 会同时把 DBus 前端挂起来，① 里「没有」的那批改由它接管。
+> 也就是说：**不需要为了让应用过 ① 关而去改会话环境**；改与不改的区别只剩「走哪条通道」。
 
 两个容易误判的地方，本次都实测到了：
 
@@ -129,6 +146,10 @@ KDE 侧还有一层桥接值得知道：KWin 6.6 客户端说 v3、输入法说 
 xime 在 Chrome 里唯一的未验证项是「commit 能否真正落进网页输入框」——需要真正切到 xime 才能确认，机制链（v3 → KWin 桥 → v1）是通的。
 
 ### 4.2 Konsole —— 能通，但要先清环境变量
+
+> **2026-11-26 起本节前提作废**：`xime-both` 会同时跑 DBus 前端，设了 `QT_IM_MODULE=fcitx`
+> 的应用改由 DBus 通道接住，**不需要再清变量、也不需要重登**。下面保留的是 2026-11-20
+> 只有 Wayland 前端时的现场记录，仅作历史参考；「必须清掉变量」的操作请勿照做。
 
 | 项 | 内容 |
 |---|---|
@@ -247,36 +268,42 @@ zwp_text_input_v2#19.set_cursor_rectangle(323, 510, 2, 22)
 
 ## 五、两条可选路线
 
-### 路线 A：原生前端（推荐，目标是四个全通）
+### 路线 A：原生前端 + DBus 兜底（推荐，即现在的默认做法）
 
 **KDE：**
 
 ```sh
-# 1. 接线：生成 xime.desktop、改 kwinrc、把 environment.d 里的 IM 变量注释掉
-xime-setup
-# 2. 重新登录（环境变量只在登录时导入，改完当次会话不生效）
-# 3. WorkBuddy 改走 Wayland（三个参数都要带，Chromium 138 < 140 不默认 v3）
-#    编辑 ~/utility/WorkBuddy-5.9.3-linux-x64/workbuddy.sh
-#    unset GTK_IM_MODULE QT_IM_MODULE
-#    exec "$DIR/workbuddy" --no-sandbox --ozone-platform-hint=auto \
-#        --enable-wayland-ime --wayland-text-input-version=3 "$@"
-# 4. 验证
+# 1. 装包即接线：deb 的 postinst 会自动跑
+#      xime-setup --kde-default   → 写 /etc/xdg/kwinrc 的 [Wayland] InputMethod
+#      xime-setup --auto          → 装用户级启动项（systemd 单元 / wlroots autostart）
+sudo apt install ./dist/xime_0.3.0_amd64.deb
+# 2. 重新登录一次（kwinrc 与启动项在会话启动时才生效）
+# 3. 验证
 xime-kde-check
-xlsclients -display $DISPLAY | grep -i workbuddy   # 应无输出
-# 5. 微信：重登后 IM 变量已全局清空，正常启动即可走 text-input-v2
-#    若不想重登、只想临时验证，单独这样起：
-#    env -u QT_IM_MODULE -u GTK_IM_MODULE -u XMODIFIERS wechat
+xime-both --status      # Wayland 前端 + DBus 前端各自在跑没
+```
+
+**Chromium/Electron 低于 140 的版本**（例如 WorkBuddy 内嵌的 Chromium 138）仍需在启动器里
+显式指定 Wayland 与 text-input v3，这与输入法无关，是 Chromium 自己的开关：
+
+```sh
+exec "$DIR/workbuddy" --no-sandbox --ozone-platform-hint=auto \
+    --enable-wayland-ime --wayland-text-input-version=3 "$@"
 ```
 
 **Hyprland：**
 
 ```sh
-# hyprland.conf
-exec-once = xime
-# 前提：会话里 QT_IM_MODULE / GTK_IM_MODULE 为空；fcitx5 不要同时抢席位
+# 方式一：会话启动脚本里拉起（xime-setup --auto 会自动写这行）
+exec-once = xime-both        # 只写 xime 也行，但没有 DBus 半边，XWayland 应用没中文
+# 方式二：systemd 用户单元（本机 0.56.2 实际用的就是这条，见第八节）
+systemctl --user enable --now xime.service
 ```
 
-覆盖结果（KDE 下已全部实测）：Chrome ✅、Konsole ✅、微信 ✅（清 IM 变量启动）、WorkBuddy ✅（加 ozone/IME 参数后重启）。
+前提：`fcitx5` 不要同时抢占输入法席位（一山不容二虎，`xime --check` 会直接报出来）。
+
+覆盖结果：KDE 下 Chrome ✅、Konsole ✅、微信 ✅、WorkBuddy ✅（均已实测）；
+Hyprland 下 foot ✅（2026-11-26 端到端实测，见第八节），其余应用仍为推断。
 
 ### 路线 B：`--dbus` 前端（覆盖面更窄，别指望它救微信）
 
@@ -313,10 +340,99 @@ grep -c '回注'   /tmp/xime-kde.log
 ## 七、未验证清单（别当成结论用）
 
 1. **Chrome / WorkBuddy 里 `commit` 是否真正落字** —— 只验证到「建了 text-input」，没验证到「汉字上屏」。用户已确认 WorkBuddy 实际可用，其余未做逐字验收。
-2. **Hyprland 侧的四个应用** —— 本机当前无 Hyprland 会话（`~/.config/hypr` 不存在），矩阵里 Hyprland 一列来自既有实测记录与上游文档，不是本次复测。
+2. **Hyprland 侧的 Chrome / Konsole / 微信 / WorkBuddy** —— 本机在 2026-11-26 已切到 Hyprland
+   （0.56.2），但这四个应用尚未逐一复测；已实测的 Hyprland 样本是 foot（第八节）。
+   矩阵里其余 Hyprland 格子仍来自既有记录与上游文档。
 3. **Chromium 超长 `surrounding_text`** —— 理论风险（KDE bug 517620），未观察到实际崩溃。
 4. **微信在 Hyprland 下是否可用** —— 它实例化的是 `zwp_text_input_v2`；Hyprland/wlroots 是否通告 `text_input_manager_v2` 需确认（常见只有 v3）。KDE 侧已实测通过，Hyprland 侧无环境可测。
 5. **WorkBuddy 在 Hyprland 下** —— 机制同 Chrome（v3 → wlroots 的 input method v2），但本机无环境，未测。
+
+---
+
+## 八、Hyprland × foot 端到端实测（2026-11-26）
+
+本节回答一个此前一直标「未验证」的问题：**wlroots 系（Hyprland）+ 终端（foot）这条组合，
+xime 到底能不能落字**。答案是能，且是端到端闭环。
+
+### 8.1 环境
+
+| 项 | 值 |
+|---|---|
+| 合成器 | Hyprland **0.56.2**（Omarchy 衍生，配置为 Lua：`~/.config/hypr/*.lua`） |
+| 会话 | `XDG_SESSION_TYPE=wayland`，`WAYLAND_DISPLAY=wayland-1` |
+| 终端 | foot **1.28.0**，编译带 `+ime`（`foot --version` 可见） |
+| 输入法 | xime 0.3.0，由 **systemd 用户单元**拉起（`xime.service`，跑的是 `xime-both`） |
+| 协议 | `zwp_input_method_manager_v2` + `zwp_text_input_manager_v3`（**v3，不是 v2**） |
+
+两个与文档预期不同的细节：
+
+1. **启动方式不是 `exec-once = xime`**，而是 `systemctl --user enable --now xime.service`
+   （单元来自 `/usr/lib/systemd/user/xime.service`，另有 `reconnect-shell.conf` / `verbose.conf`
+   两个 drop-in）。两种方式都可用，systemd 的好处是崩溃自启、日志进 journal。
+2. **foot 走的是 text-input-v3。** 日志里 `content_type: hint=0 purpose=13`（13 = TERMINAL）
+   证明它确实建了输入上下文；此前矩阵里「微信走 v2」是个体行为，不是 wlroots 的通例。
+
+### 8.2 测试方法（以及为什么不用 wtype）
+
+用一个 `cat > 文件` 的 foot 窗口，把上屏结果落盘比对字节，不靠肉眼看：
+
+```sh
+foot -a xime-foot-test -T "xime-test" sh -c 'cat > /tmp/xime-foot-commit.txt'
+```
+
+按键注入**不能用 `wtype`**（原因见 8.5），改用 `/dev/uinput` 造一个临时键盘，
+让按键走真实的 evdev → libinput → 合成器路径，与真人敲键完全等价。脚本已入库：
+[`xime-rs/tools/uinput-send.py`](../xime-rs/tools/uinput-send.py)。
+
+```sh
+python3 xime-rs/tools/uinput-send.py text:nihao sleep:1.2 shot:/tmp/preedit.png space sleep:0.8 enter
+```
+
+### 8.3 实测结果
+
+| # | 动作 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 在 foot 里敲 `nihao` | 终端出现带下划线的 preedit `nihao`，光标下方弹出候选窗：`1.你好 2.嫩好 3.你号 4.呢好 5.尼号 6.利好` + 翻页箭头 `›` | 截图 [`foot-hyprland-preedit.png`](screenshots/foot-hyprland-preedit.png) |
+| 2 | 按空格 | 候选窗消失，终端第一行变成 **「你好」**，无残留下划线；落盘字节 `e4 bd a0 e5 a5 bd 0a` | 截图 [`foot-hyprland-commit.png`](screenshots/foot-hyprland-commit.png) |
+| 3 | 敲 `zhuang` 后按 `=` 翻页 | 第 2 页：`1.转 2.赚 3.专 4.转股 5.传 6.砖`，左侧出现上一页箭头 `‹`；空格上屏「转」 | 截图 [`foot-hyprland-page2.png`](screenshots/foot-hyprland-page2.png) |
+| 4 | 敲 `nihap`（错拼） | 拼写容错生效，候选首位仍是「你好」，空格上屏「你好」 | 截图 [`foot-hyprland-fuzzy.png`](screenshots/foot-hyprland-fuzzy.png) |
+| 5 | 按 `Ctrl+C` | 不消费的按键原样回注到终端，`cat` 被杀、窗口按 foot 语义退出（退出码 2） | journal 里 `vk 回注 key=...` |
+
+第 3 条顺带确认了翻页键位在 wlroots 侧与 KDE 一致（`-` / `=`，等价 PageUp/PageDown），
+第 5 条确认了「不消费就回注」不是 KDE 专属行为。
+
+### 8.4 结论
+
+- **Hyprland + foot 可用，且是完整的输入法体验**：preedit 由 foot 自己渲染（带下划线），
+  候选窗是独立 popup surface，翻页/容错/回注都按预期工作。
+- 这条链路和 KDE 的差别**只在协议版本**（v2 vs v1，由 `--frontend auto` 自动识别），
+  引擎、候选窗、按键逻辑完全共用——所以「Hyprland 能不能用」的答案，实际取决于
+  终端自己有没有实现 `text-input-v3`，而不取决于合成器。
+- foot 1.28 的 `+ime` 是硬前提：没有它，preedit 不会显示，候选窗也无处可贴。
+
+### 8.5 已知问题：`wtype` 注入会让 keymap 解析失败
+
+用 `wtype` 做自动化测试时会踩到一个坑，日志长这样：
+
+```
+xime: keymap 事件：声明 1610 字节，实读 1610 字节
+xime: keymap 解析失败（开头: "xkb_keymap {\nxkb_keycodes \"(unnamed)\" {\n"），继续沿用上一份 keymap
+xime: key code=1 state=1
+xime: vk 回注 key=1 state=1
+```
+
+后果是终端里出现 `^[[1234` 这类乱码而不是 `nihao`——因为回退到旧 keymap 后，
+wtype 用的键码 1/2/3/4 被解释成 `Esc` / `1` / `2` / `3`。
+
+成因 **[推断]**：wtype 会创建一个 `zwp_virtual_keyboard_v1` 并上传**自己生成的最小 keymap**
+（只有它要按的那几个键，1610 字节远小于真实 keymap 的 20–40 KB）。合成器会把这个 keymap
+转发给正在抓键盘的输入法，而 `keymap.rs` 的解析器有一条 `filled < 20 → 放弃` 的阈值
+（`src/keymap.rs:147`），最小 keymap 达不到，于是回退。
+
+**这只影响自动化测试，不影响真人使用**：本机真键盘、foot、Chrome、KDE 会话下都没触发过。
+但值得记一笔——远程桌面、屏幕键盘这类同样会上传自定义 keymap 的客户端可能踩到同一个坑，
+届时的表现就是「输入法收到键但字符全错」。做自动化测试请改用 `/dev/uinput`
+（脚本见本节 8.2，`/dev/uinput` 在本机是 `crw-rw-rw-`，不需要 root）。
 
 ---
 
@@ -330,3 +446,6 @@ grep -c '回注'   /tmp/xime-kde.log
 | Chromium 140 起默认 Wayland ozone | ArchWiki Chromium、Flathub 讨论 |
 | 微信 4.1.13.26 清 IM 变量后 xime 可落字 | 本机端到端实测：`get_text_input` + `zwp_text_input_v2.enable()`；候选窗 `1.你好…`；空格后搜索框显示「你好」；`fcitx5-diagnose` 可见 dbus/wayland 双 IC |
 | XWayland 无 `wl_surface`，KWin 不建上下文 | `xime-rs/docs/kde-input-method-v1.md` 第五节 |
+| Hyprland 0.56.2 + foot 1.28 端到端可用 | 本机 2026-11-26 实测：候选窗 6 条 + 翻页第 2 页 + 上屏「你好」（字节 `e4 bd a0 e5 a5 bd`）+ `Ctrl+C` 回注；截图见第八节 |
+| `wtype` 注入触发 keymap 解析失败 | 本机 2026-11-26 journal 原文；阈值在 `xime-rs/src/keymap.rs:147`（`filled < 20`） |
+| IM 变量不再需要清 | `xime-rs/README.md`「环境变量：`QT_IM_MODULE=fcitx` 不再需要清掉」；`packaging/xime-setup` 的 `kde_env_fix()`（已反转为恢复） |
