@@ -290,8 +290,9 @@ src/
 ├── engine.rs   N-best 解码器
 ├── ngram.rs    三元语言模型：KN 回退链 + 上下文预热（Ctx）
 ├── fuzzy.rs    模糊音与拼写错：音节表 + 音节级替换 + 编辑距离 1
-├── render.rs   软光栅：圆角矩形 + 字形 alpha 叠加 + BMP 输出
+├── render.rs   软光栅：圆角矩形 + 字形 alpha 叠加 + 彩色 emoji 合成 + BMP 输出
 ├── font.rs     字形图集解析
+├── emoji.rs    彩色 emoji：ARGB 图集 + 拼音/英文前缀检索
 ├── popup.rs    候选条布局与配色
 ├── en.rs       英文前缀补全：字母序二分 + 词频排序
 ├── zh.rs       简繁转换：单字映射 + 词级例外 + 词条可见性
@@ -307,13 +308,36 @@ data/
 ├── en-words.txt  英文原始词表（按词频降序，75KB）
 ├── zh.bin      简繁转换表（275KB）
 ├── atlas.bin   9033 字形 8bpp 图集（4.4MB）
+├── emoji.bin   1375 个彩色 emoji 的 32bpp 图集（3.2MB）
+├── emoji.txt   emoji 词表：每行的 emoji + 它的检索键
+├── emoji-keys.bin  emoji 键索引（字母序，93KB，供前缀二分）
 └── hant-chars.txt  繁体字符集（供 mkfont 烘焙字形）
 ```
 
 数据在**构建期**烘焙成二进制，运行时用 `include_bytes!` 映射进只读段：
 不解析、不分配、不依赖 fontconfig/freetype，也不携带 TTF 文件。
 
-### 3.1 为什么自己写 wire 协议
+### 3.1 彩色 emoji
+
+候选里能出 emoji，拼音与英文单词键都能命中：`xiaolian` 出 😀😃，中文模式下直接敲
+`fire` 出 🚒🔥（这条拼音串没有对应词，emoji 表按字母前缀命中）。
+emoji 插在候选第 6、7 格——不抢首位（打 `xiaolian` 首选仍是「笑脸」），
+但三种候选窗形态都在第一页看得见。
+
+颜色是自带的，不靠系统字体：
+
+- `tools/mkemoji.c` 在构建期用 FreeType 读 NotoColorEmoji 的 CBDT 位图，
+  双线性缩放到 20px 后存成**预乘 ARGB** 图集。正文那套 8bpp alpha 掩码装不下颜色。
+- `scripts/gen-emoji.py` 生成词表：英文键来自 Unicode 的 emoji-test.txt 名称，
+  拼音键来自 CLDR 中文注解（`😀 -> 笑脸`）再过一遍词库反查单字读音。
+- 两条渲染路径都已接上：手写 Canvas 直接按预乘像素 `blend_into`；
+  Slint 那条把 emoji 切成独立图片段（Slint 的软件渲染器只认轮廓字体，
+  彩色位图交给它只会描出黑色外形）。
+
+只收单字形 emoji（单码点或「码点 + VS16」），ZWJ 合成序列（👨‍👩‍👧）与国旗跳过：
+候选窗按码点逐格查图集，画不了合成序列，硬收只会变成几个 emoji 并排。
+
+### 3.2 为什么自己写 wire 协议
 
 `wayland-backend` 0.3 已经移除了纯 Rust 后端，只剩 `client_system`（链 libwayland）
 和 `dlopen` 两种，都绕不开那个 `.so`。既然目标是"零动态依赖"，就只能自己实现线协议。
@@ -334,7 +358,7 @@ fd 不占消息体，走 SCM_RIGHTS 附属数据，按消息流顺序与 fd 参�
    否则 `Ctrl+C`、方向键、`Tab` 全部失效。代码按 keycode 记账（含抬起），避免按键卡死。
 3. fd 不能"每条消息分一批"——一批读进多条消息时，只有真正带 fd 参数的那条才能取走它。
 
-### 3.2 为什么自己解析 keymap
+### 3.3 为什么自己解析 keymap
 
 合成器会通过 `grab.keymap` 发来一份 XKB keymap（约 35KB 文本），C 版交给 libxkbcommon 编译。
 输入法真正需要的只有一件事：**某个 keycode 在当前 shift/caps 下产生哪个 keysym**。
@@ -666,6 +690,7 @@ xime --query hel --en             # 英文前缀补全（hel -> help/held/hello�
 xime --bench                      # 解码性能 + 词库查询微基准
 xime --keymap-test /tmp/keymap.txt # 抽查 keymap 解析结果
 xime --render-test out.bmp nihao  # 候选条渲染成 BMP
+xime-rs/tools/deepin-probe.sh     # deepin/X11：DBus + uinput 模拟按键分层诊断
 xime --verbose                    # 打印协议绑定与每次 preedit/commit
 ```
 

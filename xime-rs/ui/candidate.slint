@@ -40,9 +40,46 @@ export enum Layout {
     grid,
 }
 
+// 候选里的一段。普通文字走 Text，彩色 emoji 走 Image：
+// Slint 的软件渲染器只会给 emoji 描出黑色轮廓（CBDT 彩色位图它不认），
+// 所以 emoji 由 Rust 侧从自带图集转成图片，这里按段拼接。
+export struct Seg {
+    text: string,
+    icon: image,
+    is-icon: bool,
+}
+
+// 一个段：要么是彩色 emoji 图片，要么是一串文字。
+// Slint 的 for 只能跟一个元素，所以这里把两种形态包进同一个组件，
+// 用 visible + 条件尺寸让不匹配的那个不占位。
+component SegView inherits Rectangle {
+    in property <Seg> seg;
+    in property <bool> selected: false;
+
+    background: transparent;
+    width: inner.preferred-width;
+    height: inner.preferred-height;
+
+    inner := HorizontalLayout {
+        Image {
+            source: seg.icon;
+            width: seg.is-icon ? Theme.font-size + 4px : 0px;
+            height: seg.is-icon ? Theme.font-size + 4px : 0px;
+            image-fit: contain;
+        }
+        Text {
+            text: seg.text;
+            visible: !seg.is-icon;
+            color: selected ? Theme.sel-text : Theme.text;
+            font-size: Theme.font-size;
+            vertical-alignment: center;
+        }
+    }
+}
+
 component Chip inherits Rectangle {
     in property <int> index: 0;
-    in property <string> label: "";
+    in property <[Seg]> segments: [];
     in property <bool> selected: false;
     // 横排/竖排用「1.」带点序号，网格用「1 」空格序号（对齐 fcitx5）
     in property <bool> with-dot: true;
@@ -55,6 +92,7 @@ component Chip inherits Rectangle {
         padding-left: Theme.item-pad-x;
         padding-right: Theme.item-pad-x;
         spacing: 3px;
+        alignment: center;
 
         Text {
             text: with-dot ? "\{index}." : "\{index} ";
@@ -63,19 +101,17 @@ component Chip inherits Rectangle {
             vertical-alignment: center;
         }
 
-        Text {
-            text: label;
-            color: selected ? Theme.sel-text : Theme.text;
-            font-size: Theme.font-size;
-            vertical-alignment: center;
+        for seg in segments : SegView {
+            seg: seg;
+            selected: selected;
         }
     }
 }
 
 export component CandidateBar inherits Window {
-    in property <[string]> candidates: [];
+    in property <[[Seg]]> candidates: [];
     // 网格形态：Rust 侧把候选按 cols 切成行，这里用二维模型嵌套遍历。
-    in property <[[string]]> rows: [];
+    in property <[[[Seg]]]> rows: [];
     in-out property <Layout> layout: Layout.horizontal;
     in property <int> cols: 3;
     // 翻页提示：有上一页/下一页时在候选列表两端显示箭头
@@ -109,7 +145,7 @@ export component CandidateBar inherits Window {
             }
             for c[i] in candidates : Chip {
                 index: i + 1;
-                label: c;
+                segments: c;
                 selected: i == 0;
                 with-dot: true;
             }
@@ -147,7 +183,7 @@ export component CandidateBar inherits Window {
             }
             for c[i] in candidates : Chip {
                 index: i + 1;
-                label: c;
+                segments: c;
                 selected: i == 0;
                 with-dot: true;
             }
@@ -188,7 +224,7 @@ export component CandidateBar inherits Window {
 
                 for c[j] in row : Chip {
                     index: i * cols + j + 1;
-                    label: c;
+                    segments: c;
                     selected: i == 0 && j == 0;
                     with-dot: false;
                 }

@@ -16,6 +16,15 @@ use crate::zh::{self, Variant};
 pub const MAX_INPUT: usize = 32;
 pub const CAND_MAX: usize = 128;
 
+/// 一次组字最多带几个 emoji 候选。多了会把候选窗后半段全占满，
+/// 而 emoji 永远排在词后面，用户翻两页还全是表情就很不合理。
+const EMOJI_CANDS: usize = 2;
+
+/// emoji 插进候选的位置下限（0 基）。候选窗一页最多 9 格、横排只有 6 格，
+/// 插在第 5、6 格才能保证三种形态都在第一页看得见：既不会抢「笑脸」这类
+/// 词的首位，也不必翻页才够得着。词候选不足时按实际长度顺接。
+const EMOJI_SLOT: usize = 5;
+
 const HITS: usize = 6; // 同一拼音取几个同音候选参与搜索
 const BEST: usize = 27; // 每个位置保留几条路径（决定候选总数，27 = 3 页）
 const EDGES: usize = 96; // 每个位置最多几条边
@@ -225,6 +234,24 @@ impl Engine {
             }
             self.cands.push(text);
             self.cost.push(*c);
+        }
+
+        // 拼音命中的 emoji 插在第一页末尾。插队位置固定在 EMOJI_SLOT，
+        // 而不是直接 append：词候选动辄二三十条，append 等于把它们埋到第
+        // 三页之后，等于没做。挤掉的那两条词只是往后挪一格，仍在第二页。
+        if self.input.len() >= 2 && self.cands.len() < CAND_MAX {
+            let mut slot = self.cands.len().min(EMOJI_SLOT);
+
+            for ch in crate::emoji::Keys::get().search(&self.input, EMOJI_CANDS) {
+                let s = ch.to_string();
+                if self.cands.iter().any(|x| *x == s) {
+                    continue;
+                }
+                self.cands.insert(slot, s);
+                // 代价给个远大于词的值：翻页/排序时永远排在词后面
+                self.cost.insert(slot, 1e6);
+                slot += 1;
+            }
         }
     }
 

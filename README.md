@@ -13,6 +13,10 @@
 应用在 XWayland 上时走内置的 fcitx5-DBus 前端（`xime-both`），
 需搭配推荐安装的 fcitx5 客户端模块（qt/gtk）。
 
+候选窗自带**彩色 emoji**：图集在构建期从彩色 emoji 字体烘焙进二进制，运行时同样不加载
+任何字体。拼音（`xiaolian`）与英文单词（中文模式下敲 `fire`）都能命中，插在词候选之后的
+第一页位置。
+
 详细机制见 [`docs/xime-key-flow.md`](docs/xime-key-flow.md)。
 
 ## 目录结构

@@ -3,6 +3,7 @@
 //! 只有圆角矩形和字形 alpha 叠加两种操作，所以不引入任何 2D 库——
 //! 这也是"运行时零依赖"的一部分。
 
+use crate::emoji::Glyphs;
 use crate::font::Atlas;
 
 pub struct Canvas {
@@ -110,16 +111,50 @@ impl Canvas {
 
     pub fn text_width(&self, s: &str) -> i32 {
         let a = Atlas::get();
-        s.chars().map(|c| a.advance(c as u32)).sum()
+        let e = Glyphs::get();
+        s.chars()
+            .map(|c| {
+                let cp = c as u32;
+                // emoji 走彩色图集，宽度取它自己的 advance
+                if let Some((_, adv)) = e.lookup(cp) {
+                    return adv as i32;
+                }
+                a.advance(cp)
+            })
+            .sum()
     }
 
     /// 以 (x, y_top) 为左上角绘制一行文本
     pub fn text(&mut self, x: i32, y_top: i32, s: &str, color: u32) {
         let a = Atlas::get();
+        let e = Glyphs::get();
         let mut cursor = x;
 
         for ch in s.chars() {
             let cp = ch as u32;
+            // 彩色 emoji：整格像素是预乘 ARGB，直接叠上去，不经过 alpha 图集
+            if let Some((cell, adv)) = e.lookup(cp) {
+                for gy in 0..e.cell {
+                    let py = y_top + gy;
+                    if py < 0 || py >= self.h {
+                        continue;
+                    }
+                    let row = (py * self.w) as usize;
+                    for gx in 0..e.cell {
+                        let px = cursor + gx;
+                        if px < 0 || px >= self.w {
+                            continue;
+                        }
+                        let src = e.pixel(cell, gx, gy);
+                        if src >> 24 == 0 {
+                            continue;
+                        }
+                        blend_into(&mut self.px[row + px as usize], src, 255);
+                    }
+                }
+                cursor += adv as i32;
+                continue;
+            }
             if let Some((cell, _)) = a.lookup(cp) {
                 for gy in 0..a.cell_h {
                     let py = y_top + gy;
@@ -186,5 +221,42 @@ impl Canvas {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emoji_is_drawn_in_colour() {
+        let mut c = Canvas::new(40, 40);
+        c.text(0, 0, "😀", argb(255, 255, 255, 255));
+
+        let mut opaque = 0;
+        let mut warm = 0;
+        for p in &c.px {
+            let a = p >> 24;
+            if a == 0 {
+                continue;
+            }
+            opaque += 1;
+            // 预乘后亮度被 alpha 压过，按 alpha 还原再判断色相
+            let r = ((p >> 16) & 0xFF) * 255 / a;
+            let g = ((p >> 8) & 0xFF) * 255 / a;
+            let b = (p & 0xFF) * 255 / a;
+            if r > 200 && g > 150 && b < 120 {
+                warm += 1;
+            }
+        }
+        assert!(opaque > 100, "笑脸几乎没画出来: {opaque}");
+        assert!(warm > 50, "笑脸不是黄色系（彩色渲染没生效）: warm={warm}");
+    }
+
+    #[test]
+    fn emoji_width_comes_from_its_own_advance() {
+        let c = Canvas::new(1, 1);
+        assert_eq!(c.text_width("😀"), 24, "emoji 宽度应取图集 advance");
+        assert!(c.text_width("你") < 24, "汉字宽度不应被 emoji 影响");
     }
 }

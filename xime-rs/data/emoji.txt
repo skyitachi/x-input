@@ -1,0 +1,1377 @@
+# 由 scripts/gen-emoji.py 生成，勿手改。
+# 格式：<emoji>\t<检索键，空格分隔>
+😀	face grinning grinningface heihei xiaolian
+😃	big eyes face grinning grinningfacebigeyes haha kaikouxiao xiaolian
+😄	daxiao eyes face grinning grinningfacesmilingeyes haha kaixin smiling xiao
+😁	beaming beamingfacesmilingeyes eyes face smiling xiaolian
+😆	face grinning grinningsquintingface kaixin squinting xiao
+😅	face grinning grinningfacesweat han kuxiao lenghan sweat
+🤣	dagun deban floor laughing rolling rollingfloorlaughing xiao xiaodemandedagun
+😂	face facetearsjoy joy tears wenlei xiao xiaokule
+🙂	aa face kaixin slightly slightlysmilingface smiling xiao
+🙃	daolian down face upside upsidedownface
+🫠	face melting meltingface
+😉	face winking winkingface xiao zhawen
+😊	eyes face lianhong smiling smilingfacesmilingeyes
+😇	face guanghuan halo smiling smilingfacehalo tianshi tianzhen
+🥰	face hearts smiling smilingfacehearts xin
+😍	ai eyes face heart hongxin smiling smilingfacehearteyes
+🤩	haochongbaie liezuixiao star starstruck struck
+😘	blowing face faceblowingkiss feiwen kiss qinqin zhawen
+😗	face kissing kissingface qinqin wen
+☺	aa face fangsong kaixin smiling smilingface xiao
+😚	closed eyes face kissing kissingfaceclosedeyes qinqin wen
+😙	eyes face kissing kissingfacesmilingeyes qinqin smiling wen
+🥲	face gandongde ganende hanleidexiaolian smiling smilingfacetear tear wenlei
+😋	face facesavoringfood food haochi savoring
+😛	diaopi face facetongue tongue
+😜	chanwen face kaiwanxiao tongue winking winkingfacetongue
+🤪	dawen face fengkuangdelian xiaowen zany zanyface
+😝	face gebo squinting squintingfacetongue tongue
+🤑	baijin face jianqianwenkai money moneymouthface mouth qian
+🤗	bao baobao face hands open smiling smilingfaceopenhands xiao yongbao
+🤭	aixia bushui face facehandovermouth hand mouth over
+🫢	eyes face haibo hand mouth open over
+🫣	eye face facepeekingeye mizhu peeking toukan toukui
+🤫	face shushing shushingface xu
+🤔	face saikao thinking thinkingface xiang xiangyixiang
+🫡	face hao jundui saluting salutingface shi yangguang
+🤐	face mouth zipper zippermouthface zui
+🤨	bushenren eyebrow face faceraisedeyebrow raised
+😐	face mianmobiaoqing neutral neutralface
+😑	expressionless expressionlessface face mangran mianmobiaoqing
+😶	face facewithoutmouth mouth without zui
+🫥	dotted dottedlineface face line naxiang xuxianlian
+😏	deyi face jiaxiao smirking smirkingface
+😒	face unamused unamusedface
+🙄	baiwen eyes face facerollingeyes fanbaiwen rolling
+😬	face grimacing grimacingface guilian
+🤥	face lying lyingface shuihuang
+🫨	chandou dezhen face shaking shakingface zhendong zhenjing
+😌	face relieved relievedface songkouqi songlekouqi
+😔	chensai face pensive pensiveface xinshichongchong
+😪	face kun shuijue sleepy sleepyface
+🤤	drooling droolingface face koushui liukoushui
+😴	dahu face shuizhaole sleeping sleepingface
+😷	face facemedicalmask ganmao mask medical shengbing
+🤒	face facethermometer fashao shengbing thermometer
+🤕	bandage dabengdai daoshang face faceheadbandage head
+🤢	face nauseated nauseatedface tu
+🤮	face facevomiting vomiting
+🤧	face sneezing sneezingface
+🥵	chuhan face fare fashao hot hotface lianfashao lianhong xinkuangdiao
+🥶	cold coldface face leng lengbingbing lenglian
+🥴	face touhunwenhua touyunwenhua wenhua woozy woozyface zuichunchandou
+😵	crossed eyes face facecrossedouteyes out touyun touyunwenhua yuntou yuntouzhuaixiang
+🤯	exploding explodinghead head zhenjing
+🤠	cowboy cowboyhatface face hat mao niuzai niuzaimaolian
+🥳	face maozi partying partyingface
+🥸	disguised disguisedface face
+😎	face ku smiling smilingfacesunglasses sunglasses
+🤓	face nerd nerdface shudaizilian
+🧐	face facemonocle guban monocle
+😕	budong confused confusedface face kunrao
+🫤	buqueding diagonal face facediagonalmouth moliao mouth
+😟	face shangxin worried worriedface
+🙁	bukaixin face frowning slightly slightlyfrowningface xinqingbuhao
+☹	buman bushuang face frowning frowningface
+😮	chijing face faceopenmouth mouth open tongqing
+😯	chijing face hushed hushedface
+😲	astonished astonishedface face jing zhenjing
+😳	face flushed flushedface lianhong mangran mimang
+🥺	face kenqiudelian pleading pleadingface
+🥹	back face faceholdingbacktears holding renzhuleishui shengqi tears zihao
+😦	face frowning frowningfaceopenmouth mouth mudengkoudai open
+😧	anguished anguishedface face jidutongku nandao tong
+😨	bo face fearful fearfulface haibo
+😰	anxious anxiousfacesweat face han lenghan sweat
+😥	but face relieved sad sadbutrelievedface
+😢	crying cryingface face ku lei shangxin
+😭	crying daku face fangshengdaku ku lei loudly loudlycryingface tongku
+😱	face facescreamingfear fear haibo hasi hasile screaming
+😖	confounded confoundedface face
+😣	face nandao persevering perseveringface rennai tongku
+😞	disappointed disappointedface face nanguo
+😓	downcast downcastfacesweat face han leng sweat
+😩	face lei leisile weary wearyface
+😫	face lei tired tiredface
+🥱	aqian daaqian face haqian kun lei moliao yawning yawningface
+😤	face facesteamfromnose from nose steam ying
+😡	enraged enragedface face fahuo nu nuhuozhongshao shengqi
+😠	angry angryface face nu shengqi
+🤬	face facesymbolsmouth mouth symbols
+😈	face horns shenhuagushi smiling smilingfacehorns
+👿	angry angryfacehorns face horns
+💀	shenhuagushi siwang skull tougu
+☠	crossbones gutou siwang skull skullcrossbones tougu
+💩	dabian guaiwu pile pilepoo poo
+🤡	clown clownface face xiaochou xiaochoulian
+👹	gui ogre shenhuagushi
+👺	goblin shenhuagushi
+👻	ghost gui shenhuagushi
+👽	alien takong
+👾	alien alienmonster guaiwu monster takong
+🤖	guaiwu robot
+😺	cat daxiaodemao grinning grinningcat haha maolian xiao
+😸	aa cat eyes grinning grinningcatsmilingeyes maolian smiling xiao
+😹	cat cattearsjoy joy kuaile maolian tears wenlei xiaochuwenleidemao
+😻	cat eyes heart maolian smiling smilingcathearteyes xin
+😼	cat catwrysmile maolian smile wry
+😽	cat kissing kissingcat maolian qinqin qinqinmao wen
+🙀	cat lei maolian weary wearycat
+😿	cat crying cryingcat ku maolian nanguo wenlei
+😾	cat maolian pouting poutingcat shengqi shengqidemao
+🙈	evil mengwen monkey see seenoevilmonkey
+🙉	evil hear hearnoevilmonkey monkey
+🙊	evil monkey speak speaknoevilmonkey
+💌	letter love loveletter qingshu shen
+💘	aiqing arrow heart heartarrow hongxin qiubite
+💝	heart heartribbon ribbon
+💖	heart hongxin shanliang shanliangdexin sparkling sparklingheart
+💗	growing growingheart heart hongxin
+💓	ai beating beatingheart heart xindiao xindong
+💞	hearts revolving revolvinghearts wudongdexin yongdong
+💕	aiqing hearts two twohearts
+💟	decoration heart heartdecoration
+❣	exclamation heart heartexclamation tanhao xindong xintanhao
+💔	broken brokenheart heart shangxin xinsui
+❤	ai heart hongxin red redheart xin
+🩷	ai fenhong fenhongsedexin geai heart pink pinkheart xin
+🧡	heart orange orangeheart
+💛	heart huang huangxin yellow yellowheart
+💚	green greenheart heart lv lvxin
+💙	blue blueheart heart la laxin
+🩵	blue heart lalv light lightblueheart qianla qianlasedexin qingse xin
+💜	heart purple purpleheart zi zixin
+🤎	brown brownheart heart xin xinxing
+🖤	black blackheart heart heise heixin xin
+🩶	anhui grey greyheart heart hui huixin xin yin
+🤍	bai baixin heart white whiteheart xin xinxing
+💋	chun chunyin kiss kissmark mark wen
+💯	hundred hundredpoints manfen points yibaifen
+💢	anger angersymbol huoda nu shengqi symbol
+💥	collision zha
+💫	dizzy touyun
+💦	droplets han sweat sweatdroplets
+💨	away dashing dashingaway feibenerqu
+🕳	dong hole kang
+💬	balloon fayan qipao speech speechballoon
+🗨	bubble left leftspeechbubble speech
+🗯	anger bubble right rightangerbubble
+💭	balloon naxinguodongqipao qipao saixiangguodong thought thoughtballoon
+💤	dahu shuizhao zzz
+👋	hand huishou nihao waving wavinghand zaijian
+🤚	back hand liqi liqideshoubei raised raisedbackhand shou shoubei
+🖐	bu fingers hand handfingerssplayed shou shouzhang splayed
+✋	hand juqishou jushou raised raisedhand shou
+🖖	salute shou siboke vulcan vulcansalute waken
+🫱	hand rightwards rightwardshand shou xiangyou xiangyoudeshou you
+🫲	hand leftwards leftwardshand shou xiangzuo xiangzuodeshou zuo
+🫳	down hand palm palmdownhand xiadou zhangxinxiangxiadeshou
+🫴	guolai hand jiezhu palm palmuphand tigong zhangxinxiangshangdeshou
+🫷	dengdeng hand leftwards leftwardspushinghand pushing tui xiangzuo xiangzuotui
+🫸	dengdeng hand pushing rightwards rightwardspushinghand tui xiangyou xiangyoutui
+👌	hand okhand shou
+🤌	fingers nieshouzhi pinched pinchedfingers shouzhi waku
+🤏	hand pinching pinchinghand shaoliang xiao yidian
+✌	chenggong hand shou victory victoryhand
+🤞	crossed crossedfingers fingers jiaocha jiaochadeshouzhi shou shouzhi
+🫰	ai anggui crossed finger hand index jinqian thumb xin
+🤟	gesture love loveyougesture shou woaini you
+🤘	horns shou sign signhorns
+🤙	call callmehand dianhua geiwodadianhua hand shou
+👈	backhand fanshou index left pointing shou xiangzuozhi zhizuo
+👉	backhand fanshou index pointing right shou xiangyouzhi zhiyou
+👆	backhand backhandindexpointingup fanshou index pointing shou xiangshangzhi zhishang
+🖕	fanshou finger middle middlefinger shou zhongzhi
+👇	backhand down fanshou index pointing shou xiangxiazhi zhixia
+☝	index indexpointingup pointing shou xiangshangzhi zhishang
+🫵	index indexpointingatviewer ni pointing viewer zhixiang
+👍	dingyixia shou thumbs thumbsup tongyi zancheng zhenbang
+👎	buzancheng down fandui shou thumbs thumbsdown zebei
+✊	fist juqiquantou ouquan quantou raised raisedfist shou
+👊	chuquan da fist oncoming oncomingfist quan shou
+🤛	chaozuo chaozuodequantou facing fist left leftfacingfist quantou
+🤜	chaoyou chaoyoudequantou facing fist quantou right rightfacingfist shou
+👏	boshou clapping clappinghands hands
+🙌	hands jushuangshou raising raisinghands shuangshou
+🫶	ai hands heart hearthands
+👐	hands open openhands shuangshou zhangkaishuangshou
+🤲	palms palmsuptogether together zhangxinxiangshangtuoqi
+🤝	handshake huimian oushou
+🙏	baituo folded foldedhands hands
+✍	bi hand writing writinghand xie xiezi
+💅	meijia nail nailpolish polish tuzhijiayou zhijiayou
+🤳	selfie zibo
+💪	biceps flexed flexedbiceps jiangzhuang
+🦾	arm mechanical mechanicalarm
+🦿	leg mechanical mechanicalleg tui
+🦵	die leg tui
+🦶	cai die foot jiao
+👂	ear er erduo ting
+🦻	aid ear earhearingaid hearing long
+👃	nose wen
+🧠	brain danao nao tounao
+🫀	anatomical anatomicalheart heart xindiao xinlv xinzangbingxue zhongxin
+🫁	huqi lungs
+🦷	tooth
+🦴	bone gutou
+👀	eyes shuangwen
+👁	eye kan wen
+👅	tongue
+👄	chun kou mouth zui
+🫦	biting bitinglip diaoqing haibo lip yaozhuzuichun
+👶	baby baobao
+🧒	child nianqingren xingbiebumeng xingbiezhongli
+👦	boy
+👧	girl
+🧑	chengren person xingbiezhongli xinggebumeng
+👱	blond hair jinfa jinsetoufaderen
+👨	chengren man nanren
+🧔	beard nan
+👩	nv nvren woman
+🧓	chengren laonianren laoren older olderperson person xingbiebumeng xingbiezhongxing
+👴	laoren laotou man old oldman
+👵	laonainai laoren laota old oldwoman woman
+🙍	bukaixin frowning person personfrowning
+🙎	bukaixin person personpouting pouting
+🙅	buhang fandui gesturing person persongesturingno
+🙆	gesturing haode person persongesturingok
+💁	hand jiantai person persontippinghand tipping
+🙋	hand jushou kaixin person personraisinghand raising
+🧏	deaf deafperson erduo long person tingli
+🙇	bowing buhaoyisai duibuqi person personbowing
+🤦	facepalming person personfacepalming
+🤷	buguanxin person personshrugging shrugging
+👮	officer police policeofficer
+🕵	detective
+💂	guard
+🥷	dadou ninja renzhe
+👷	construction constructionworker worker
+🫅	crown guicou junzhu person personcrown
+🤴	prince wangzi
+👸	gongzhu princess
+👳	person personwearingturban turban wearing
+👲	daiguapimaoderen guapimao maozi person personskullcap skullcap
+🧕	headscarf woman womanheadscarf
+🤵	person persontuxedo tuxedo xinlang
+👰	person personveil veil xinniang
+🤰	nvren pregnant pregnantwoman woman
+🫃	chongman man pregnant pregnantman
+🫄	chongman person pregnant pregnantperson
+🤱	breast breastfeeding feeding
+👼	angel baby babyangel tianshi xiaotianshi
+🎅	claus santa santaclaus
+🤶	claus laoma nainai
+🦸	chaonaili haoren nvyingxiong superhero yingxiong
+🦹	chaonaili huaidan supervillain zuifan
+🧙	mage
+🧚	fairy jingling
+🧛	busicou vampire
+🧜	meirenyu merperson nanrenyu nvrenyu renyu
+🧝	elf xiaojingling
+🧞	genie shenling
+🧟	busicou zombie
+🧌	guaiwu shenhuagushi troll
+💆	getting massage meirong person persongettingmassage
+💇	getting haircut lifa person persongettinghaircut
+🚶	hangren person personwalking tubu walking zoulu
+🧍	person personstanding standing zhanli zhanlizhe zhanzhao
+🧎	guixia guizuo kneeling person personkneeling xiaguizhe
+🏃	malasong paobu paobuzhe person personrunning running
+💃	dancing diaowu diaowudenvren nvren woman womandancing
+🕺	dancing diaowu diaowudenanren man mandancing nanren
+🕴	levitating person personsuitlevitating suit zhengzhuang
+👯	baidui bunny diaowu ears people peoplebunnyears
+🧖	person personsteamyroom room sangna steamy
+🧗	climbing deshanzhe person personclimbing
+🤺	benyo fencing jian person personfencing
+🏇	horse horseracing ma racing saima
+⛷	skier xue
+🏂	snowboarder xue
+🏌	dagaoerfuderen gaoerfu golfing person persongolfing qiu
+🏄	chonglang person personsurfing surfing
+🚣	boat chuan person personrowingboat rowing
+🏊	person personswimming swimming
+⛹	ball bouncing person personbouncingball qiu wan wanqiu
+🏋	juchong lifting person personliftingweights weights
+🚴	biking chanche person personbiking zihangche
+🚵	biking chanche mountain person personmountainbiking shandeche zihangche
+🤸	bencao benyo cartwheeling ceshoufan person personcartwheeling
+🤼	benyo people peoplewrestling wrestling
+🤽	benyo person personplayingwaterpolo playing polo shuiqiu water
+🤾	benyo handball person personplayinghandball playing shouqiu
+🤹	juggling paojie paojiezashua person personjuggling pianheng zashua
+🧘	lotus pantuideren person personlotusposition position
+🛀	bath person persontakingbath taking xizao xizaoderen
+🛌	bed binguan jiudian person personbed rushui tangzaichuangshangderen
+👭	hands holding lianggannvren shoulashou women womenholdinghands
+👫	hands holding man shoulashou shoulashoudeyinanyinv woman womanmanholdinghands yinanyinv
+👬	hands holding lianggannanren men menholdinghands shoulashou shuangzizuo
+💏	jiewen kiss qinwen
+💑	couple coupleheart heart hongxin
+🗣	head jianghua shuihua speaking speakinghead tou
+👤	banjuanxiang bust bustsilhouette renxiang silhouette
+👥	banjuanxiang busts bustssilhouette shuangrenxiang silhouette
+🫂	ganxie hugging ninhao people peoplehugging rendeyongbao yongbao zaijian
+👪	family
+👣	footprints jiaoyin
+🐵	face hou houtou monkey monkeyface
+🐒	hou houzi monkey
+🦍	gorilla
+🦧	hou orangutan
+🐶	dog dogface face gou goulian
+🐕	dog gou
+🦮	dog guide guidedog mang zhiyin
+🐩	gou juanmaogou poodle
+🐺	lang tou wolf
+🦊	fox tou
+🦝	huanxiong raccoon
+🐱	cat catface face mao maolian
+🐈	cat mao
+🦁	lion
+🐯	face laohu laohutou tiger tigerface
+🐅	hu laohu tiger
+🐆	leopard
+🐴	face horse horseface ma matou
+🫎	dongwu moose
+🫏	dongwu donkey lv lvzi
+🐎	bisai horse ma saima
+🦄	tou unicorn
+🦓	zebra
+🦌	deer lu
+🦬	bison shuiniu
+🐮	cow cowface face nainiu nainiutou
+🐂	gongniu jinniuzuo niu ox
+🐃	buffalo shuiniu water waterbuffalo
+🐄	cow nainiu niu
+🐷	face pig pigface
+🐖	pig
+🐗	boar
+🐽	nose pig pignose
+🐏	baiyangzuo gongyang ram xiongxing yang
+🐑	ewe muyang yang
+🐐	goat shanyang
+🐪	camel chanfeng
+🐫	camel hump shuangfeng two twohumpcamel
+🦙	llama yangmao
+🦒	changgenglu giraffe
+🐘	daxiang elephant xiang
+🦣	changya daxing mammoth miejue
+🦏	rhinoceros
+🦛	hema hippopotamus
+🐭	face mouse mouseface
+🐁	haozi mouse
+🐀	haozi rat
+🐹	hamster tou
+🐰	face rabbit rabbitface
+🐇	rabbit
+🐿	chipmunk
+🦫	beaver
+🦔	hedgehog
+🦇	bat
+🐻	bear tou xiong
+🐨	kaola koala
+🐼	panda pangda tou xiongmao
+🦥	lan man pashu shulan sloth
+🦦	buyu dongwu otter
+🦨	chou skunk
+🦘	diao kangaroo
+🦡	badger
+🐾	paw pawprints prints zhuayin zhuazi
+🦃	turkey
+🐔	chicken
+🐓	rooster
+🐣	chick hatching hatchingchick
+🐤	baby babychick chick
+🐥	baby chick facing front frontfacingbabychick
+🐦	bird niao
+🐧	penguin
+🕊	dove hepianxiangzheng niao
+🦅	eagle niao
+🦆	duck niao ya yazi
+🦢	chouxiaoya niao swan
+🦉	niao owl
+🦤	dodo maoliqiusi miejue
+🪶	feather fei niao qing
+🦩	flamingo huolieniao redai
+🦚	kongque niao peacock
+🦜	niao parrot shuihua
+🪽	feihang niao shenhua tianshi wing
+🪿	goose mingjiao niao sha
+🐸	frog tou
+🐊	crocodile
+🐢	turtle
+🦎	lizard pahangdongwu
+🐍	chipiaoren she shefuzuo snake
+🐲	dragon dragonface face long longtou
+🐉	dragon long
+🦕	leilong sauropod
+🦖	rex trex
+🐳	penshui spouting spoutingwhale whale
+🐋	whale
+🐬	dolphin yajiaoban
+🦭	seal
+🐟	fish shuangyuzuo yu
+🐠	fish redai redaiyu tropical tropicalfish yu
+🐡	blowfish yu
+🦈	shark yu
+🐙	bazhua octopus yu zhangyu
+🐚	shell spiral spiralshell
+🪸	coral
+🪼	aiyo faguang jellyfish shuimu weicidongwu
+🐌	snail
+🦋	butterfly kunchong piaoliang
+🐛	bug maochong maomaochong
+🐜	ant
+🐝	honeybee
+🪲	beetle jiachong kunchong
+🐞	beetle kunchong lady ladybeetle mu
+🦗	cricket
+🪳	cockroach haichong kunchong
+🕷	spider
+🕸	spider spiderweb web
+🦂	scorpion
+🦟	bingdu fare kunchong mosquito
+🪰	fly haichong
+🪱	worm
+🦠	bianxingchong bingdu microbe xijun
+💐	bouquet
+🌸	blossom cherry cherryblossom hua
+💮	baihua flower hua white whiteflower
+🪷	fojiao hua lotus yindujiao
+🏵	hua rosette
+🌹	hua rose
+🥀	flower hua wilted wiltedflower
+🌺	hibiscus hua
+🌻	hua sunflower tayanghua
+🌼	blossom hua kaihua
+🌷	hua tulip
+🪻	fengshenzi hua hyacinth jinyucao lamaohua
+🌱	miao seedling
+🪴	fangzi plant potted pottedplant pouyo shengchang
+🌲	changqingshu evergreen evergreentree shu songshu tree
+🌳	deciduous deciduoustree laye layeshu shu tree
+🌴	palm palmtree tree
+🌵	cactus
+🌾	mi rice sheaf sheafrice
+🌿	caoyao herb yaocao
+☘	sanyecao shamrock
+🍀	clover four fourleafclover leaf siyecao
+🍁	jianada leaf maple mapleleaf qiu
+🍂	fallen fallenleaf laye leaf qiu ye
+🍃	fengchuiyela fluttering leaf leafflutteringwind shuye suifengpiaowu wind yezi
+🪹	empty emptynest nest
+🪺	eggs nest nesteggs
+🍄	mushroom
+🍇	grapes shuiguo
+🍈	melon shuiguo tiangua
+🍉	shuiguo watermelon xigua
+🍊	shuiguo tangerine
+🍋	lemon shuiguo
+🍌	banana shuiguo
+🍍	pineapple shuiguo
+🥭	mangguo mango redai shuiguo
+🍎	apple hong red redapple shuiguo
+🍏	apple green greenapple qing shuiguo
+🍐	pear shuiguo
+🍑	peach shuiguo tao
+🍒	cherries shuiguo
+🍓	shuiguo strawberry
+🫐	blueberries
+🥝	fruit kiwi kiwifruit shuiguo
+🍅	tomato
+🫒	olive
+🥥	coconut
+🥑	avocado niuyouguo shuiguo
+🍆	eggplant
+🥔	potato tudou
+🥕	carrot
+🌽	corn ear earcorn
+🌶	hot hotpepper pepper
+🫑	bell bellpepper pepper
+🥒	cucumber huanggua paocai
+🥬	green leafy leafygreen xiaobaicai
+🥦	broccoli xilanhua
+🧄	dasuan garlic suan suantou
+🧅	onion
+🥜	huasheng peanuts
+🫘	beans dou doulei
+🌰	chestnut
+🫚	gen ginger gingerroot root
+🫛	dou maodou pea peapod pod
+🍞	bread mianbao
+🥐	croissant fashi mianbao xinruxingmianbao
+🥖	baguette baguettebread bread fashi fashichanggunmianbao mianbao
+🫓	baocuibing flatbread pitabing
+🥨	pretzel
+🥯	bagel mianbaoquan
+🥞	pancakes
+🧇	dianxin gezibing huafubing kao waffle wofubing
+🧀	cheese cheesewedge wedge
+🍖	bone gu meat meatbone paigu rou
+🍗	leg poultry poultryleg
+🥩	cut cutmeat meat niupai paigu roukuai yangpai
+🥓	bacon pougen rou
+🍔	hamburger
+🍟	french frenchfries fries youzha
+🍕	pizza
+🌭	dog hot hotdog regou
+🥪	mianbao sandwich
+🌮	juanbing taco
+🌯	burrito juanbing
+🫔	tamale
+🥙	flatbread gaxin gaxinbing stuffed stuffedflatbread
+🧆	falafel
+🥚	dan egg
+🍳	cooking dan piandeguo
+🥘	food pan qiande shallow shallowpanfood
+🍲	food pot potfood
+🫕	fondue guo
+🥣	bowl bowlspoon guwu spoon zaocan zhou
+🥗	green greensalad lvseshala salad shala
+🍿	popcorn
+🧈	butter huangyou niunai
+🧂	salt yan
+🥫	canned cannedfood food
+🍱	bento bentobox biandang box
+🍘	cracker mibing miguo rice ricecracker
+🍙	ball fanqiu riben rice riceball
+🍚	cooked cookedrice fan mi mifan rice
+🍛	curry curryrice fan rice
+🍜	bowl lamian miantiao reqitengteng steaming steamingbowl wan
+🍝	spaghetti yifen yimian
+🍠	degua kaodegua potato roasted roastedsweetpotato sweet
+🍢	oden
+🍣	sushi
+🍤	fried friedshrimp shrimp zhaha
+🍥	cake fish fishcakeswirl swirl yuban
+🥮	cake moon mooncake qiutian rubing
+🍡	dango qiuzi riben tiandian
+🥟	dumpling
+🥠	cookie fortune fortunecookie
+🥡	box takeout takeoutbox waimaibaozhuang
+🦀	crab
+🦞	lobster longha nongshang
+🦐	ha shrimp
+🦑	ruanbendongwu squid
+🦪	oyster
+🍦	cream ice soft softicecream
+🍧	bing bingsha ice shaved shavedice tiandian
+🍨	bing cream ice icecream tiandian
+🍩	doughnut tiandian tiantianquan
+🍪	binggan cookie
+🎂	birthday birthdaycake cake dangao shengri shengridangao
+🍰	dangao shortcake shuiguodangao tiandian
+🧁	cupcake tiandian
+🥧	bai gaodian pie yousudianxin
+🍫	bar chocolate chocolatebar tiandian tianpin
+🍬	candy tang tangguo
+🍭	bangbangtang lollipop tang
+🍮	custard dannaidong naihuang
+🍯	honey honeypot pot
+🍼	baby babybottle bottle nai naiping
+🥛	bei glass glassmilk milk nai yibeinai
+☕	beverage cha hot hotbeverage reyin yinliao
+🫖	cha teapot
+🍵	bei cha handle meweibashoudechabei recha teacup teacupwithouthandle without yinliao
+🍶	jiubei ping qingjiu sake yinliao
+🍾	bottle bottlepoppingcork cork musai pingzi popping
+🍷	glass jiu jiubei wine wineglass
+🍸	bei cocktail cocktailglass glass jiu
+🍹	drink redaishuiguoyinliao tropical tropicaldrink yinliao
+🍺	beer beermug bei jiu mug
+🍻	beer clinking clinkingbeermugs ganbei jiu mugs pengbei
+🥂	bei clinking clinkingglasses glasses he pengbei
+🥃	bei glass jiu piandebei tumbler tumblerglass
+🫗	kong liquid liuchu pouring pouringliquid yinliao
+🥤	cup cupstraw straw suda
+🧋	bubble bubbletea cha niunai paopao tea
+🧃	beverage beveragebox box
+🧉	cha mate yinliao
+🧊	bingkuai bingshan ice lengque lengyin
+🥢	chopsticks kuaizi
+🍽	canju cha dao fork forkknifeplate knife pan plate
+🍴	canju cha dao daocha fork forkknife knife
+🥄	canju diaogeng spoon
+🔪	caidao dao kitchen kitchenknife knife
+🫙	jar kong
+🏺	amphora shuangerping
+🌍	africa deqiu europe feizhou globe globeshowingeuropeafrica ouzhou showing
+🌎	americas deqiu deqiushangdemeizhou globe globeshowingamericas meizhou showing
+🌏	asia australia deqiu globe showing yazhou
+🌐	deqiu globe globemeridians meridians
+🗺	detu map world worldmap
+🗾	detu japan map mapjapan riben ribendetu
+🧭	compass dingxiang zhinazhen
+🏔	capped leng mountain shan snow snowcappedmountain xue xueshan
+⛰	mountain shan
+🌋	huoshan penfa shan volcano
+🗻	fuji mount mountfuji shan
+🏕	camping louying
+🏖	beach beachumbrella san umbrella
+🏜	desert
+🏝	desert desertisland huangdao island morenhuangdao
+🏞	national nationalpark park ziran
+🏟	benyoguan stadium
+🏛	building classical classicalbuilding
+🏗	building buildingconstruction construction
+🧱	brick qiang zhuan
+🪨	dantou rock
+🪵	mutou wood yuanmu
+🛖	hut menggubao
+🏘	fang houses zhuzhai
+🏚	derelict derelicthouse house huangfei huangzhai
+🏠	fangzi house jia
+🏡	fangzi garden house housegarden jia
+🏢	bangonglou building office officebuilding xiezilou
+🏣	japanese japanesepostoffice office post riben
+🏤	office ouzhou post postoffice
+🏥	hospital kanbing
+🏦	bank yinhang
+🏨	hotel jiudian lvguan
+🏩	hotel love lovehotel qingrenjiudian qingrenlvguan
+🏪	convenience conveniencestore shangdian store
+🏫	jiaoxuelou school xuexiao
+🏬	department departmentstore shangchang store
+🏭	factory
+🏯	castle japanese japanesecastle riben
+🏰	castle ouzhou
+💒	jiaotang wedding
+🗼	dongjing dongjingta ta tokyo tokyotower tower
+🗽	liberty statue statueliberty ziyao ziyaonvshenxiang
+⛪	church jiaotang zongjiao
+🕌	mosque qingzhensi zongjiao
+🛕	fojiao fosi hindu hindutemple simiao temple yindusimiao
+🕍	huitang synagogue zongjiao
+⛩	riben shendaojiao shenshe shinto shintoshrine shrine zongjiao
+🕋	kaaba keerbai tianfang zongjiao
+⛲	fountain
+⛺	louying tent
+🌁	foggy
+🌃	night nightstars stars wanshang yewan
+🏙	chengfufengguang cityscape doufu
+🌄	mountains over richu shan shandingrichu sunrise sunriseovermountains tayang
+🌅	richu sunrise tayang
+🌆	chengfuhuanghun cityscape cityscapeatdusk doufu dusk huanghun rila yewan
+🌇	rila sunset
+🌉	bridge bridgeatnight night qiao wanshang
+♨	hot hotsprings reqitengteng shui springs
+🎠	carousel carouselhorse horse muma
+🛝	playground playgroundslide slide wanshua
+🎡	ferris ferriswheel wheel
+🎢	coaster guoshanche roller rollercoaster
+💈	barber barberpole lifa lifadian pole
+🎪	circus circustent tent
+🚂	huoche locomotive
+🚃	car dianche railway railwaycar
+🚄	dongche gaosulieche gaotie high highspeedtrain huoche speed train xinganxian
+🚅	bullet bullettrain dongche gaosu gaotie huoche train xinganxian zidantougaosulieche
+🚆	huoche tielu train
+🚇	detie metro
+🚈	huoche light lightrail rail
+🚉	chezhan huoche station tielu
+🚊	dianche lumiandianche tram
+🚝	huoche monorail
+🚞	huoche mountain mountainrailway railway shanou shanoutielu tielu
+🚋	car tram tramcar
+🚌	bus daba gongjiaoche
+🚍	bus daba oncoming oncomingbus
+🚎	dianche trolleybus
+🚐	minibus xiaoba
+🚑	ambulance
+🚒	engine fire fireengine jiuhuoche xiaofangche
+🚓	car police policecar
+🚔	car oncoming oncomingpolicecar police
+🚕	chuzuche taxi
+🚖	chuzuche oncoming oncomingtaxi taxi
+🚗	automobile
+🚘	automobile oncoming oncomingautomobile
+🚙	sport sportutilityvehicle utility vehicle
+🛻	kache pickup pickuptruck truck
+🚚	delivery deliverytruck kache truck
+🚛	articulated articulatedlorry kache lorry tuoche
+🚜	tractor
+🏎	car paoche racing racingcar saiche
+🏍	motorcycle
+🛵	motor motorscooter scooter
+🦽	manual manualwheelchair wheelchair
+🦼	motorized motorizedwheelchair wheelchair
+🛺	auto autorickshaw rickshaw sanbengzi zidongrenliche
+🚲	bicycle chanche zihangche
+🛴	kick kickscooter scooter
+🛹	ban skateboard
+🛼	lunshi roller rollerskate skate
+🚏	bus busstop gongjiaochezhan gongjiaozhan stop
+🛣	gaosugonglu gonglu motorway
+🛤	huoche railway railwaytrack tielu track
+🛢	drum oil oildrum
+⛽	chaiyou fuel fuelpump jiayouzhan pump ranyou youbeng
+🛞	chelun wheel zhuaidong
+🚨	car deng light police policecarlight
+🚥	guangxiangdehonglvdeng honglvdeng horizontal horizontaltrafficlight jiaotongdeng light shenhaodeng traffic
+🚦	honglvdeng jiaotongdeng light shenhaodeng traffic vertical verticaltrafficlight zongxiangdehonglvdeng
+🛑	babianxing sign stop stopsign
+🚧	construction
+⚓	anchor chuan tingpo
+🛟	anquan buoy jiushengquan jiushengyongju ring ringbuoy
+⛵	chuan sailboat
+🛶	canoe
+🚤	chuan speedboat
+🛳	kechuan kelun passenger passengership ship
+⛴	ferry lunchuan
+🛥	boat chuan motor motorboat
+🚢	chuan ship
+✈	airplane
+🛩	airplane small smallairplane
+🛫	airplane airplanedeparture departure hangbanqifei qifei
+🛬	airplane airplanearrival arrival daoda hangbanjiangla jiangla
+🪂	diaosan jianglasan parachute
+💺	seat
+🚁	helicopter
+🚟	railway suspension suspensionrailway xuangua
+🚠	cableway kongzhong mountain mountaincableway suodao
+🚡	aerial aerialtramway kongzhong suodao tramway
+🛰	satellite takong
+🚀	rocket takong
+🛸	bumengfeihangwu flying flyingsaucer saucer
+🛎	bell bellhop bellhopbell jiudian
+🧳	baozhuang luggage lvhang
+⌛	done hourglass hourglassdone shalou
+⏳	done hourglass hourglassnotdone not
+⌚	biao shoubiao watch
+⏰	alarm alarmclock clock naozhong zhong
+⏱	miaobiao stopwatch
+⏲	clock timer timerclock
+🕰	clock mantelpiece mantelpiececlock taizhong zuozhong
+🕛	twelve
+🕧	thirty twelve twelvethirty
+🕐	one yidian
+🕜	one onethirty thirty yidianban
+🕑	liangdian two
+🕝	liangdianban thirty two twothirty
+🕒	sandian three
+🕞	sandianban thirty three threethirty
+🕓	four sidian
+🕟	four fourthirty sidianban thirty
+🕔	five wudian
+🕠	five fivethirty thirty wudianban
+🕕	liudian six
+🕡	liudianban six sixthirty thirty
+🕖	qidian seven
+🕢	qidianban seven seventhirty thirty
+🕗	badian eight
+🕣	badianban eight eightthirty thirty
+🕘	jiudian nine
+🕤	jiudianban nine ninethirty thirty
+🕙	ten
+🕥	ten tenthirty thirty
+🕚	eleven
+🕦	eleven eleventhirty thirty
+🌑	moon new newmoon ruliang shuoru xinru
+🌒	crescent moon ruliang sanriru wanru waxing waxingcrescentmoon
+🌓	first firstquartermoon moon quarter ruliang
+🌔	gibbous moon ruliang waxing waxinggibbousmoon
+🌕	full fullmoon manru moon ruliang wangru
+🌖	gibbous moon ruliang waning waninggibbousmoon
+🌗	last lastquartermoon moon quarter ruliang
+🌘	canru crescent moon ruliang waning waningcrescentmoon wanru
+🌙	crescent crescentmoon moon ruliang wanru
+🌚	face moon new newmoonface ruliang shuoru
+🌛	face first firstquartermoonface moon quarter ruliang
+🌜	canru face last lastquartermoonface moon quarter ruliang
+🌡	qiwen thermometer tianqi
+☀	sun tayang
+🌝	face full fullmoonface manru moon ruliang wangru
+🌞	face sun sunface tayang
+🪐	planet ringed ringedplanet
+⭐	star
+🌟	faguang glowing glowingstar star
+🌠	shooting shootingstar star
+🌌	milky milkyway way yinhe
+☁	cloud yun
+⛅	behind cloud duoyun sun sunbehindcloud
+⛈	cloud cloudlightningrain lightning rain
+🌤	behind cloud shaoyun small sun sunbehindsmallcloud tayang yun
+🌥	behind cloud duoyun large sun sunbehindlargecloud tayang yun
+🌦	behind cloud rain sun sunbehindraincloud tayang yun
+🌧	cloud cloudrain rain yun
+🌨	cloud cloudsnow snow xiaxue xue yun
+🌩	cloud cloudlightning dalei lei lightning shandian yun
+🌪	longjuanfeng tornado yun
+🌫	fog
+🌬	dafeng face kuangfeng wind windface
+🌀	cyclone taifeng
+🌈	rainbow
+🌂	closed closedumbrella san shouqidesan umbrella
+☂	san umbrella
+☔	drops rain umbrella umbrellaraindrops
+⛱	ground san umbrella umbrellaground yangsan
+⚡	gaoya high highvoltage shandian voltage weidian
+❄	leng snowflake xue xuehua
+☃	snowman xue xueren xueyuxueren
+⛄	snow snowman snowmanwithoutsnow without xueren
+☄	comet takong
+🔥	fire huo
+💧	droplet leng shui
+🌊	bolang langhua water waterwave wave
+🎃	denglong jack jackolantern lantern naguadeng
+🎄	christmas christmastree shu tree
+🎆	fireworks yanhua
+🎇	huohua sparkler yanhua yanhuo
+🧨	firecracker yanhua zhayao
+✨	huohua shanguang shanliang sparkles
+🎈	balloon qiqiu
+🎉	baidui caidai lapaocaidai party partypopper popper
+🎊	ball confetti confettiball qiu
+🎋	riben shu tanabata tanabatatree tree
+🎍	decoration mensong pine pinedecoration riben songshu
+🎎	dolls japanese japanesedolls renou ribenrenxing
+🎏	carp carpstreamer riben streamer
+🎐	chime wind windchime
+🎑	ceremony moon moonviewingceremony ruliang shangru viewing zhongqiu
+🧧	envelope hongbao qian red redenvelope yunqi
+🎀	ribbon
+🎁	baozhuang gift wrapped wrappedgift
+🎗	reminder reminderribbon ribbon
+🎟	admission admissiontickets menpiao piao tickets
+🎫	chepiao menpiao piao ticket
+🎖	jundui jungongzhang medal military militarymedal
+🏆	trophy
+🏅	medal sports sportsmedal
+🥇	diyi jinpai medal place
+🥈	dier medal place yinpai
+🥉	disan medal place tongpai
+⚽	ball qiu soccer soccerball yingshizuqiu zuqiu
+⚾	bangqiu baseball qiu
+🥎	qiu shoutao softball
+🏀	basketball qiu
+🏐	paiqiu qiu volleyball
+🏈	american americanfootball football qiu
+🏉	football qiu rugby rugbyfootball
+🎾	qiu qiubo tennis wangqiu
+🥏	disc feipan flying flyingdisc zhongji
+🎳	bowling qiu
+🏏	banqiu cricket cricketgame game qiu qiubo
+🏑	field fieldhockey hockey qiu qiugun qugunqiu
+🏒	bingqiu hockey ice icehockey qiu qiugun
+🥍	lacrosse qiu qiugun qiumen
+🏓	bisai ping pingpong pong qiu qiubo
+🏸	badminton qiubo
+🥊	boxing boxingglove glove shoutao
+🥋	arts kongshoudao martial martialartsuniform roudao uniform
+🥅	goal goalnet net qiumen qiuwang
+⛳	flag flaghole gaoerfu gaoerfuqiudong hole
+⛸	bingdao ice iceskate liubing skate
+🎣	fishing fishingpole pole
+🤿	diving divingmask mask
+🎽	paobu running runningshirt shirt yundongbeixin
+🎿	skis xue
+🛷	sled
+🥌	bingshangliudan bisai curling curlingstone stone
+🎯	bullseye feibiao mingzhong
+🪀	shangxiaqila wanju yoyo
+🪁	kite
+🔫	pistol qiang shouqiang shuiqiang water waterpistol zuolun
+🎱	ball pool taiqiu
+🔮	ball crystal crystalball mingyun qiu
+🪄	magic magicwand wand
+🎮	game shoubing video videogame
+🕹	joystick
+🎰	machine slot slotmachine
+🎲	die game gamedie sezi touzi
+🧩	liansuo piece pintu puzzle puzzlepiece tupian xiansuo
+🧸	bear teddy teddybear tianchong wanju wanou
+🪩	ball mirror mirrorball
+🪆	dolls eluositaowa nesting nestingdolls taowa wawa
+♠	heitao pai puke spade spadesuit suit
+♥	heart heartsuit hongtao hongxin pai puke suit
+♦	diamond diamondsuit fangkuai fangpian pai puke suit
+♣	caohua club clubsuit meihua pai puke suit
+♟	bing chess chesspawn daopianzhe pawn
+🃏	dawang daxiaowang guipai joker pai puke xiaowang
+🀄	dragon hongzhong mahjong mahjongreddragon red
+🎴	cards flower flowerplayingcards huapai kapai playing riben
+🎭	arts mianju performing performingarts
+🖼	framed framedpicture hua picture
+🎨	artist artistpalette diaoseban diaosepan huahua palette
+🧵	thread xian xianzhou zhen
+🪡	fenghe fenghezhen fengxian needle sewing sewingneedle xiuhuazhen
+🧶	maoxian maoxianqiu yarn
+🪢	knot
+👓	glasses
+🕶	sunglasses
+🥽	goggles
+🥼	baidagua coat kexuejia lab labcoat
+🦺	anquan beixin safety safetyvest taosheng vest
+👔	lingdai necktie
+👕	shirt tshirt
+👖	jeans
+🧣	scarf
+🧤	gloves shoutao
+🧥	coat gake waitao
+🧦	socks
+👗	dress
+👘	kimono riben
+🥻	sari
+🩱	one onepieceswimsuit piece swimsuit yipianshi
+🩲	briefs yipianshi
+🩳	shorts
+👙	bikini sandianshi
+👚	clothes nv nvzhuang
+🪭	fan folding foldinghandfan hand re shan shandong zheshan
+👛	purse qianbao
+👜	handbag kuabao shoutibao
+👝	bag bao clutch clutchbag shounabao
+🛍	bags bao guangjie shopping shoppingbags
+🎒	backpack bao shubao
+🩴	caolv sandal thong thongsandal
+👞	nanwa shoe wa
+👟	paowa running runningshoe shoe wa yundongwa
+🥾	boot deshan deshanwa hiking hikingboot louying tubu
+🥿	bianwa flat flatshoe piandewa shoe yijiaodeng
+👠	gaogenwa heeled high highheeledshoe nv shoe wa
+👡	nv sandal
+🩰	ballet balletshoes diaowu shoes wuwa
+👢	boot nv
+🪮	faga feizhoutou gazi hair hairpick pick toufa
+👑	crown
+👒	hat maozi nv nvmao
+🎩	gaomao hat maozi top tophat
+🎓	biyemao cap graduation graduationcap sifangmao
+🧢	bangqiumao billed billedcap cap
+🪖	helmet jundui junyong military militaryhelmet
+⛑	anquanmao helmet rescue
+📿	beads prayer prayerbeads zongjiao
+💄	kouhong lipstick
+💍	ring
+💎	baodan gem gemstone stone zuandan
+🔇	mosheng muted mutedspeaker speaker
+🔈	low qingsheng speaker speakerlowvolume volume xiaosheng
+🔉	medium speaker speakermediumvolume volume zhongdeng
+🔊	dasheng high speaker speakerhighvolume volume
+📢	dasheng loudspeaker tongzhi
+📣	dasheng huhan megaphone tongzhi
+📯	hao horn postal postalhorn
+🔔	bell
+🔕	bell bellslash mosheng slash
+🎼	lepu musical musicalscore score wuxianpu
+🎵	lepu musical musicalnote note wuxianpu
+🎶	lepu musical musicalnotes notes wuxianpu
+🎙	mai maike maikefeng microphone studio studiomicrophone
+🎚	dianpian level levelslider slider
+🎛	control controlknobs knobs
+🎤	changge mai maike maikefeng microphone
+🎧	headphone
+📻	diantai moxiandian radio
+🎷	chuicou sakesiguan saxophone
+🪗	accordion fengqin shoufengqin
+🎸	dancou guitar
+🎹	dancou gangqin keyboard musical musicalkeyboard
+🎺	chuicou trumpet xiaohao
+🎻	tiqin violin xiaotiqin
+🪕	banjo banzhuoqin dancou
+🥁	drum
+🪘	drum long longdrum qiao
+🪇	maracas shaqiu
+🪈	flute
+📱	dianhua mobile mobilephone phone shoutidianhua
+📲	arrow jieshou laidian mobile mobilephonearrow phone
+☎	dianhua telephone
+📞	dianhua receiver telephone telephonereceiver
+📟	pager
+📠	chuanzhen chuanzhenhao fachuanzhen fax faxmachine machine
+🔋	battery dianji zhengji
+🪫	battery dianzi dinailiang low lowbattery
+🔌	chatou dianchatou dianxian electric electricplug plug
+💻	diannao ganrendiannao laptop shoutidiannao
+🖥	computer desktop desktopcomputer ganrendiannao taishidiannao
+🖨	fuyin printer
+⌨	dazi diannao keyboard shuru
+🖱	computer computermouse dianan diannao mouse
+🖲	diannao duizongqiu trackball
+💽	computer computerdisk diannaoguangpan disk guangpan minichangpian
+💾	disk floppy floppydisk ruanpan
+💿	disk guangpan optical opticaldisk
+📀	dvd guangpan
+🧮	abacus suanpan
+🎥	camera movie moviecamera
+🎞	film filmframes frames
+📽	film filmprojector projector
+🎬	board clapper clapperboard daban
+📺	television
+📷	bozhao camera zhaopian
+📸	bozhao camera cameraflash flash shanguangdeng shanguangdengdakai
+📹	boshe camera luxiang video videocamera
+📼	luxiangdai videocassette
+🔍	chahua fangda glass left magnifying sousuo tilted
+🔎	chahua fangda glass magnifying right sousuo tilted
+🕯	candle guang ranshao zhaomeng
+💡	bulb dengpao diandengpao light lightbulb xiangfa zhuyi
+🔦	flashlight guang shoudian zhaomeng
+🏮	denglong guang hongdenglong lantern paper red redpaperlantern
+🪔	deng diya diyalamp lamp yinduyoudeng you
+📔	benzi cover decorative fengmian notebook notebookdecorativecover
+📕	book closed closedbook heshang heshangdeshuben shu shuben
+📖	book dakai dakaideshuben doushu open openbook shu shuben
+📗	book green greenbook lv lvse lvseshuben shu shuben
+📘	blue bluebook book lase laseshuben shu shuben
+📙	book orange orangebook shu shuben
+📚	books shu shuben tushu
+📓	benzi notebook
+📒	ledger
+📃	curl daijuanbiandeyemian juanbian page pagecurl wendang wenmou wenshu
+📜	huajuan juanzhou scroll
+📄	facing page pagefacingup wendang wenmou wenshu
+📰	baodao doubao kanbao newspaper xinwen
+🗞	juanqi newspaper rolled rolledupnewspaper xinwen
+📑	bookmark bookmarktabs tabs
+🔖	bookmark doushu
+🏷	hanglipai label
+💰	bag meiyuan money moneybag qian qianbao
+🪙	coin jin jinshu qian yin
+💴	banknote qian riyuan xianjin yen yenbanknote
+💵	banknote dollar dollarbanknote meiyuan qian xianjin
+💶	banknote euro eurobanknote ouyuan qian xianjin
+💷	banknote pound poundbanknote qian xianjin yingbang
+💸	huaqian money moneywings qian wings
+💳	card credit creditcard ka shenyongka shuaka yinhangka
+🧾	fapiao pingju receipt shouju zhengmeng
+💹	chart chartincreasingyen increasing yen
+✉	envelope laishen shenfeng shenmou
+📧	email mail shenfeng
+📨	envelope incoming incomingenvelope jieshou laishen shoudaolaishen shoushen
+📩	arrow envelope envelopearrow fachu fashen fasong shenfeng shenmou
+📤	fashen fasong outbox outboxtray shenmou tray
+📥	inbox inboxtray jieshou shenmou shoushen tray
+📦	package yunsong
+📫	closed closedmailboxraisedflag flag mailbox raised weidaishoushenmou weixinshenmou
+📪	closed closedmailboxloweredflag flag lowered mailbox modaishoushenmou moxinshenmou
+📬	dakai flag mailbox open openmailboxraisedflag raised weidaishoushenmou weixinshenmou
+📭	flag lowered mailbox modaishoushenmou moxinshenmou open openmailboxloweredflag
+📮	postbox shen
+🗳	ballot ballotboxballot box doupiao xuanju xuanpiao
+✏	bi huabi huahua huihua pencil
+✒	black blacknib gangbi gengbi nib xiezi
+🖋	bi fountain fountainpen gangbi gengbi pen xiezi
+🖊	bi pen youbi yuanzibi
+🖌	bishua huabi huashua maobi paintbrush shua
+🖍	crayon huabang youhuabang
+📝	beiwanglu biantiao memo
+💼	bao briefcase gongshibao gongwenbao shoutibao
+📁	bangong file filefolder folder wenju wenmou wenmouga
+📂	bangong dakai dakaidewenmouga file folder open openfilefolder wenju wenmou
+🗂	card cardindexdividers dividers fenrong index suoyin suoyinfenrongwenmouga wenmouga
+📅	calendar riqi
+📆	calendar off riqi tear tearoffcalendar
+🗒	notepad spiral spiralnotepad wenju xianquanben
+🗓	calendar riqi spiral spiralcalendar xianquan
+📇	card cardindex index kapaisuoyin kapian kapiansuoyin mulu suoyin
+📈	chart chartincreasing increasing shangsheng tubiao xiangshang
+📉	chart chartdecreasing decreasing tubiao xiadie xiadietubiao xiajiang xiangxia
+📊	bar barchart chart tiaoxingtu tubiao zhifangtu
+📋	clipboard gazi xieziban
+📌	anding pushpin tuding
+📍	pushpin round roundpushpin tuding
+📎	huixingzhen moziga paperclip qubiezhen
+🖇	huixingzhen linked linkedpaperclips moziga paperclips qubiezhen
+📏	celiang changdu ruler straight straightruler wenju
+📐	celiang ruler triangular triangularruler wenju
+✂	scissors
+🗃	box card cardfilebox cundang dangan file suoyin
+🗄	cabinet cundang dangan file filecabinet guidang
+🗑	wastebasket
+🔒	heshangdesuo locked shangsuo suo suoding suozhu
+🔓	dakaidesuo kaisuo quxiaosuoding suo unlocked
+🔏	bi gangbi locked lockedpen pen suo
+🔐	anquan key locked lockedkey suo suoshang
+🔑	kaisuo key
+🗝	key old oldkey
+🔨	chuizi hammer qiao tiechui za
+🪓	axe kan mutou qie
+⛏	caikuang pick tiegao
+⚒	chuizi chuiziyugao gaozi hammer hammerpick pick tiechui tiegao
+🛠	chuizi hammer hammerwrench tiechui wrench
+🗡	dagger duandao
+⚔	crossed crossedswords jian jiaocha shuangjian swords
+💣	bomb zhadan
+🪃	boomerang fandan huidan
+🏹	arrow bow bowarrow sheshou
+🛡	dun dunpai shield
+🪚	carpentry carpentrysaw saw
+🔧	wrench
+🪛	screwdriver
+🔩	bolt nut nutbolt
+⚙	chuandong gear
+🗜	clamp gaju
+⚖	balance balancescale falv gongpian gongzheng scale tianpian
+🦯	cane mang white whitecane
+🔗	lianjie liantiao link suolian
+⛓	chains lian liantiao suolian tielian
+🪝	gouzhuangwu guagou hook maidian quxian zhua
+🧰	toolbox
+🧲	magnet
+🪜	guangdang ladder pa
+⚗	alembic huaxue
+🧪	huaxue huaxuejia kexue test testtube tube
+🧫	dish petri petridish pouyang shengwuxue shengwuxuejia xijun
+🧬	dna jinhua shengming shengwuxuejia
+🔬	kexue microscope shengwu
+🔭	telescope tianben tianwen tianwenxue
+📡	antenna satellite satelliteantenna shenhaojieshou tianxian
+💉	dazhen syringe zhentou
+🩸	blood drop dropblood jingxue rujing shuxue
+💊	chiyao pill yao yaowu
+🩹	adhesive adhesivebandage bandage bengdai chuanggetie shangkou
+🩼	crutch daoshang
+🩺	stethoscope xindiao xinzang
+🩻	gujia ray xray
+🚪	churukou damen door fangjian fangmen men
+🛗	elevator gedaxing
+🪞	fanshe mirror
+🪟	kaichuang toumeng window
+🛏	bed binguan chuang chuangpu shuijue
+🛋	couch couchlamp deng jia lamp shafa shafahedeng
+🪑	chair zuo
+🚽	toilet xishoujian
+🪠	guosai plunger
+🚿	penshui pentou shower shui
+🛁	bathtub paozao xizao zaopen
+🪤	mouse mousetrap trap
+🪒	dao gua mao razor
+🧴	bottle fangshaishuang lotion lotionbottle xifashui
+🧷	anquanbiezhen biezhen kouzhen pin safety safetypin
+🧹	broom dasao saode
+🧺	basket nongzuo
+🧻	paper roll rollpaper
+🪣	bucket
+🧼	shajun soap xishou
+🫧	bubbles qipao shuixia
+🪥	shua toothbrush yake yashua
+🧽	sponge
+🧯	extinguisher fire fireextinguisher miehuo
+🛒	caigou cart gouwuche shopping shoppingcart shoutuiche
+🚬	chouyan cigarette juanyan yan yancao
+⚰	coffin maizang siwang
+🪦	gongmu headstone mude
+⚱	funeral funeralurn urn weng
+🧿	amulet nazar nazaramulet
+🪬	hamsa miliyamu shou
+🗿	fuguodao maoai moai
+🪧	bugao haibao placard
+🪪	anquan card identification identificationcard juanbinzheng pingzheng
+🏧	atm atmsign sign yinhang
+🚮	bin litter litterbinsign sign
+🚰	heshui jieshui potable potablewater shui shuilongtou water yinyongshui
+♿	symbol wheelchair wheelchairsymbol
+🚹	room xishoujian
+🚺	room xishoujian
+🚻	restroom xishoujian
+🚼	baby babysymbol baobao symbol
+🚾	closet water watercloset xishoujian
+🛂	control passport passportcontrol tonghangzheng
+🛃	customs haiguan
+🛄	baggage baggageclaim claim hangli tiqu tiquhangli
+🛅	hangli left leftluggage luggage
+⚠	warning
+🚸	anquan children childrencrossing crossing hangren jiaotong
+⛔	entry jiaotong noentry
+🚫	buxu buzhun prohibited
+🚳	bicycles jiaotong nobicycles
+🚭	chouyan nosmoking smoking
+🚯	littering nolittering
+🚱	feiyinyongshui feizhiyinshui non nonpotablewater potable shui water
+🚷	hangren nopedestrians pedestrians
+📵	dianhua mobile nomobilephones phones
+🔞	eighteen nooneundereighteen one under
+☢	fangshexing radioactive
+☣	biohazard dangxinganran dongwu
+⬆	arrow bei fangxiang uparrow
+↗	arrow dongbei fangxiang right uprightarrow
+➡	arrow dong fangxiang right rightarrow
+↘	arrow dongna down downrightarrow fangxiang right
+⬇	arrow down downarrow xiangxia zhengna
+↙	arrow down downleftarrow fangxiang left xina
+⬅	arrow fangxiang left leftarrow xi
+↖	arrow fangxiang left upleftarrow xibei
+↕	arrow down shangxia updownarrow
+↔	arrow left leftrightarrow right zuoyou
+↩	arrow curving left right rightarrowcurvingleft youzhuaiwan
+↪	arrow curving left leftarrowcurvingright right zuozhuaiwan
+⤴	arrow curving right rightarrowcurvingup youshangwan
+⤵	arrow curving down right rightarrowcurvingdown youxiawan
+🔃	arrows chongxinzairu clockwise clockwiseverticalarrows fangxiang vertical
+🔄	arrows button counterclockwise
+🔙	arrow back backarrow huitui
+🔚	arrow end endarrow
+🔛	arrow
+🔜	arrow mashang soon soonarrow
+🔝	arrow top toparrow xiangshang
+🛐	dedian place placeworship worship zongjiaochangsuo
+⚛	atom atomsymbol moshenlun symbol
+🕉	aomu om zongjiao
+✡	david star stardavid zongjiao
+☸	dharma falun fo wheel wheeldharma zongjiao
+☯	dao daojiao taji yang yin yinyang zongjiao
+✝	cross latin latincross tianzhujiao zongjiao
+☦	cross dongzhengjiao orthodox orthodoxcross zongjiao
+☪	crescent star starcrescent zongjiao
+☮	hepian peace peacesymbol symbol
+🕎	dengtai menorah zongjiao
+🔯	dotted dottedsixpointedstar mingyun pointed six star
+🪯	kanda khanda zongjiao
+♈	aries baiyangzuo gongyang
+♉	gongniu jinniuzuo taurus
+♊	gemini shuangzizuo
+♋	cancer
+♌	leo
+♍	chunvzuo virgo
+♎	libra pianheng
+♏	scorpio
+♐	sagittarius sheshouzuo
+♑	capricorn shanyang
+♒	aquarius shui shuipingzuo
+♓	pisces shuangyuzuo yu
+⛎	ophiuchus she shefuzuo
+🔀	button daluan jiaocha shuffle shuffletracksbutton tracks
+🔁	button chongfuanniu repeat repeatbutton shunshizhen
+🔂	button chanquxunhuan chongfuyicianniu repeat repeatsinglebutton shunshizhen single xunhuan
+▶	button play playbutton xiangyou
+⏩	button fast fastforwardbutton forward kuaijinanniu kuaisu xiangjian
+⏭	button next nexttrackbutton track wanghou
+⏯	button pause play playorpausebutton xiangyou
+◀	button daotuianniu houtui reverse reversebutton xiangzuo
+⏪	button daohui fast fastreversebutton kuaituianniu reverse
+⏮	button last lasttrackbutton track
+🔼	button upwards upwardsbutton wangshang
+⏫	button fast fastupbutton kuaisushangshenganniu xiangshang
+🔽	button downwards downwardsbutton wangxia
+⏬	button down fast fastdownbutton kuaisuxiajianganniu xiangxia
+⏸	button pause pausebutton shuangtiaoxing zantinganniu
+⏹	button fangxing stop stopbutton
+⏺	button record recordbutton
+⏏	button danchu eject ejectbutton tuichuanniu
+🎦	changsuo cinema
+🔅	button di diliangduanniu dim dimbutton hunan liangdu
+🔆	bright brightbutton button gaoliangduanniu liangdu mengliang tayang
+📶	antenna antennabars bars shenhaojiangdutiao tianxian tiao
+🛜	diannao moxian wireless
+📳	mode vibration vibrationmode zhendong
+📴	mobile mobilephoneoff off phone
+♀	female femalesign sign
+♂	male malesign sign xiongxing
+⚧	kuaxingbie symbol transgender transgendersymbol
+✖	cheng chenghao multiply quxiao xiangcheng
+➕	jia jiahao plus shuxue xiangjia
+➖	guangxian minus shuxue
+➗	chu chuhao divide shuxue xiangchu
+🟰	cudenghao denghao equals heavy heavyequalssign piandeng shuxue sign xiangdeng
+♾	infinity jida mojin moqiongda
+‼	chijing double doubleexclamationmark exclamation lianggan mark shuanggantanhao
+⁉	chijing exclamation exclamationquestionmark mark question wenhao
+❓	hongsewenhao mark question red redquestionmark weishenme wenhao
+❔	baisewenhao kongxin mark question weishenme white whitequestionmark
+❕	baisegantanhao chijing exclamation kongxin mark white whiteexclamationmark
+❗	chijing exclamation gantanhao hongsegantanhao mark red redexclamationmark
+〰	bolangxingpozhehao dash langhua wavy wavydash
+💱	currency currencyexchange duihuan exchange liutong
+💲	dollar heavy heavydollarsign jinqian meiyuan sign
+⚕	medical medicalsymbol symbol
+♻	recycling recyclingsymbol symbol xunhuan
+⚜	fleur fleurdelis lis
+🔱	chuan emblem trident tridentemblem
+📛	badge name namebadge xingmingpai xiongpai zhengzhang
+🔰	beginner japanese japanesesymbolbeginner symbol yezhuang
+⭕	circle da hollow hollowredcircle hong red
+✅	anniu button check checkmarkbutton dagou gou gouhao gouhaoanniu mark
+☑	box check checkboxcheck dagou daigoufangge gouhao
+✔	check checkmark dagou duigou gouhao mark zhengque
+❌	chahao cross crossmark jiaocha mark quxiao xiangcheng
+❎	button chahaoanniu cross crossmarkbutton fangxing mark quxiao
+➰	chanhuan curly curlyloop juanquhuan loop
+➿	curly double doublecurlyloop loop shuanghuan shuangjuanquhuan
+〽	alternation mark part partalternationmark
+✳	asterisk eight eightspokedasterisk spoked
+✴	eight eightpointedstar pointed star
+❇	huohua sparkle yanhuo
+©	banquan copyright
+®	registered
+™	chanpin mark shangbiao trade trademark
+🔠	dazi input inputlatinuppercase ladingwen latin shurudaxieladingzimu shurufa uppercase
+🔡	dazi input inputlatinlowercase ladingwen latin lowercase shurufa shuruxiaoxieladingzimu
+🔢	dazi input inputnumbers numbers shurushuzi
+🔣	dazi input inputsymbols symbols
+🔤	dazi input inputlatinletters ladingwen latin letters shuruladingzimu zimu
+🅰	anniu button
+🆎	anniu button
+🅱	anniu button
+🆑	button clbutton qingli
+🆒	button cool coolbutton ku
+🆓	anniu bushoufei button free freebutton mianfeianniu
+ℹ	information
+🆔	button idbutton juanbin
+Ⓜ	circled circledm mi quan zimu
+🆕	button new newbutton xinde
+🆖	button huanv ngbutton
+🅾	anniu button
+🆗	button okbutton tongyi
+🅿	button pbutton poche tingcheanniu
+🆘	button qiujiu sos sosbutton
+🆙	button xiangshang
+🆚	button duijue vsbutton
+🈁	button cichu japanese riwen
+🈂	button japanese riwen shoufei
+🈷	button japanese riwen rudu
+🈶	button feiyong free japanese riwen
+🈯	button japanese riwen
+🉐	button japanese riwen
+🈹	button japanese riwen zhekou
+🈚	button japanese mianfei riwen
+🈲	button japanese riwen
+🉑	button japanese riwen xuge
+🈸	button japanese riwen
+🈴	button japanese riwen tongguo
+🈳	button japanese kong riwen
+㊗	button japanese riwen
+㊙	baomi button japanese riwen
+🈺	button japanese kaimen riwen
+🈵	button japanese man riwen
+🔴	circle hong hongse quan red redcircle
+🟠	circle orange orangecircle quan
+🟡	circle huang quan yellow yellowcircle
+🟢	circle green greencircle lv quan
+🔵	blue bluecircle circle la quan
+🟣	circle purple purplecircle quan zi
+🟤	brown browncircle circle quan
+⚫	black blackcircle circle hei quan
+⚪	bai circle quan white whitecircle
+🟥	fangkuai hong hongsefangkuai red redsquare square zhengfangxing
+🟧	fangkuai orange orangesquare square zhengfangxing
+🟨	fangkuai huang huangsefangkuai square yellow yellowsquare zhengfangxing
+🟩	fangkuai green greensquare lv lvsefangkuai square zhengfangxing
+🟦	blue bluesquare fangkuai la lasefangkuai square zhengfangxing
+🟪	fangkuai purple purplesquare square zhengfangxing zi zisefangkuai
+🟫	brown brownsquare fangkuai square zhengfangxing
+⬛	black blacklargesquare da heise large square zhengfangxing
+⬜	baise da large square white whitelargesquare zhengfangxing
+◼	black blackmediumsquare heise heisezhongfangkuai medium square zhengfangxing zhongdeng
+◻	baise baisezhongfangkuai medium square white whitemediumsquare zhengfangxing zhongdeng
+◾	black blackmediumsmallsquare heise heisezhongxiaofangkuai medium small square zhengfangxing zhongxiao
+◽	baise baisezhongxiaofangkuai medium small square white whitemediumsmallsquare
+▪	black blacksmallsquare heise heisexiaofangkuai small square xiao zhengfangxing
+▫	baise baisexiaofangkuai small square white whitesmallsquare xiao zhengfangxing
+🔶	da diamond fangpian large largeorangediamond orange
+🔷	blue da diamond fangpian large largebluediamond lase
+🔸	diamond fangpian orange small smallorangediamond xiao
+🔹	blue diamond fangpian lase small smallbluediamond xiao
+🔺	hongse pointed red redtrianglepointedup triangle xiangshang
+🔻	down hongse pointed red redtrianglepointeddown triangle xiangxia
+💠	diamond diamonddot dot meihuaxing nabu zhongxin
+🔘	button chandu chanxuananniu radio radiobutton xuanzhong
+🔳	anniu baibianxianfangxinganniu baisefangxinganniu baisezhengfangxinganniu baixianfangxinganniu button square white whitesquarebutton
+🔲	anniu black blacksquarebutton button heibianxianfangxinganniu heisefangxinganniu heisezhengfangxinganniu heixianfangxinganniu square
+🏁	chequered chequeredflag flag
+🚩	flag triangular triangularflag
+🎌	crossed crossedflags duicha flags riben
+🏴	black blackflag flag
+🏳	flag white whiteflag

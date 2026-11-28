@@ -1,6 +1,7 @@
 mod ngram;
 mod config;
 mod dict;
+mod emoji;
 mod en;
 mod engine;
 mod fcitx_dbus;

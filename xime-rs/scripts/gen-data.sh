@@ -114,3 +114,22 @@ else
     # 0.85 = 边缘压暗，26 = 低于该 alpha 的灰雾归零，用来补足没有 hinting 的短板
     "$src/build/mkfont" "$font" "$here/data/atlas.bin" 18 "$here/data/hant-chars.txt" 0.85 26
 fi
+
+# 彩色 emoji 图集：正文那套 8bpp alpha 装不下颜色，emoji 单独走 32bpp。
+# 需要彩色 emoji 位图字体（NotoColorEmoji 之类）与 freetype2；
+# 两者缺一就沿用已有的 data/emoji.bin，不让整个数据流程失败。
+emoji_font=$(fc-list -f '%{file}\n' 2>/dev/null | grep -iE 'color.?emoji' | head -1 || true)
+[ -n "$emoji_font" ] || emoji_font=$(fc-list -f '%{file}\n' 2>/dev/null | grep -i 'emoji' | head -1 || true)
+if [ -n "$emoji_font" ] && pkg-config --exists freetype2 2>/dev/null; then
+    echo "  emoji -> data/emoji.bin（源字体 $emoji_font）"
+    # 词表与键索引由 gen-emoji.py 生成；没有 CLDR 注解时只剩英文键，
+    # 所以这里只在 emoji.txt 缺失时才重跑（正常情况它已在仓库里）。
+    if [ ! -s "$here/data/emoji.txt" ]; then
+        python3 "$here/scripts/gen-emoji.py" || true
+    fi
+    cc -O2 $(pkg-config --cflags freetype2) -o "$here/build/mkemoji" \
+       "$here/tools/mkemoji.c" $(pkg-config --libs freetype2) -lm
+    "$here/build/mkemoji" "$here/data/emoji.txt" "$emoji_font" "$here/data/emoji.bin" 20
+else
+    echo "  跳过 emoji 图集（找不到彩色 emoji 字体或 freetype2），沿用已有的 data/emoji.bin" >&2
+fi

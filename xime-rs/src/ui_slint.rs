@@ -69,9 +69,72 @@ fn to_slint_color(pm: u32) -> slint::Color {
     )
 }
 
+/// 取一个 emoji 的彩色位图，转成 Slint 的 Image（RGBA，非预乘）。
+///
+/// Slint 的软件渲染器只认轮廓字体，彩色的 CBDT 位图交给它只会描出黑色外形，
+/// 所以这里直接把自带图集里的像素搬进 Image，由 .slint 按段当图片画。
+fn emoji_image(ch: char) -> Option<slint::Image> {
+    let g = crate::emoji::Glyphs::get();
+    let (cell, _) = g.lookup(ch as u32)?;
+    let n = g.cell.max(1) as u32;
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(n, n);
+    let dst = buf.make_mut_bytes();
+
+    for y in 0..n as i32 {
+        for x in 0..n as i32 {
+            let p = g.pixel(cell, x, y);
+            let a = (p >> 24) & 0xFF;
+            if a == 0 {
+                continue; // 缓冲初始就是全 0
+            }
+            let un = |v: u32| ((v * 255 / a).min(255)) as u8;
+            let i = ((y as u32 * n + x as u32) * 4) as usize;
+            dst[i] = un((p >> 16) & 0xFF);
+            dst[i + 1] = un((p >> 8) & 0xFF);
+            dst[i + 2] = un(p & 0xFF);
+            dst[i + 3] = a as u8;
+        }
+    }
+    Some(slint::Image::from_rgba8(buf))
+}
+
+/// 把一条候选切成若干段：连续的普通字符合成一个文本段，emoji 各自成图片段。
+/// 绝大多数候选不含 emoji，结果就是「一个文本段」，与改造前完全一样。
+fn segments_of(text: &str) -> ModelRc<Seg> {
+    let mut segs: Vec<Seg> = Vec::new();
+    let mut run = String::new();
+
+    fn flush(run: &mut String, segs: &mut Vec<Seg>) {
+        if run.is_empty() {
+            return;
+        }
+        segs.push(Seg {
+            text: SharedString::from(run.as_str()),
+            icon: Default::default(),
+            is_icon: false,
+        });
+        run.clear();
+    }
+
+    for ch in text.chars() {
+        match emoji_image(ch) {
+            Some(img) => {
+                flush(&mut run, &mut segs);
+                segs.push(Seg {
+                    text: SharedString::default(),
+                    icon: img,
+                    is_icon: true,
+                });
+            }
+            None => run.push(ch),
+        }
+    }
+    flush(&mut run, &mut segs);
+    ModelRc::from(Rc::new(VecModel::from(segs)))
+}
+
 /// popup::Layout → Slint 生成的 Layout 枚举
-fn to_slint_layout(l: crate::popup::Layout) -> Layout {
-    match l {
+fn to_slint_layout(l: crate::popup::Layout) -> Layout {    match l {
         crate::popup::Layout::Horizontal => Layout::Horizontal,
         crate::popup::Layout::Vertical => Layout::Vertical,
         crate::popup::Layout::Grid => Layout::Grid,
@@ -197,24 +260,22 @@ impl SlintUi {
         self.ui.set_has_next(has_next);
         match self.layout {
             Layout::Horizontal | Layout::Vertical => {
-                let model: Vec<SharedString> =
-                    cands.iter().map(|s| SharedString::from(s.as_str())).collect();
+                let model: Vec<ModelRc<Seg>> = cands.iter().map(|s| segments_of(s)).collect();
                 self.ui.set_candidates(ModelRc::from(Rc::new(VecModel::from(model))));
             }
             Layout::Grid => {
                 // 网格：按 cols 切成行，交给 .slint 里的嵌套 for 遍历。
-                // Slint 的 [[string]] 对应 Rust 的 ModelRc<ModelRc<SharedString>>：
-                // 外层 model 的元素是「一行」这个内层 model。
+                // Slint 的 [[[Seg]]] 对应 Rust 的 ModelRc<ModelRc<ModelRc<Seg>>>：
+                // 最外层是「行」，中间是「一条候选」，最内层是「一条候选里的段」。
                 let cols = self.cols.max(1) as usize;
-                let row_models: Vec<ModelRc<SharedString>> = cands
+                let row_models: Vec<ModelRc<ModelRc<Seg>>> = cands
                     .chunks(cols)
                     .map(|row| {
-                        let v: Vec<SharedString> =
-                            row.iter().map(|s| SharedString::from(s.as_str())).collect();
+                        let v: Vec<ModelRc<Seg>> = row.iter().map(|s| segments_of(s)).collect();
                         ModelRc::from(Rc::new(VecModel::from(v)))
                     })
                     .collect();
-                let outer: ModelRc<ModelRc<SharedString>> =
+                let outer: ModelRc<ModelRc<ModelRc<Seg>>> =
                     ModelRc::from(Rc::new(VecModel::from(row_models)));
                 self.ui.set_rows(outer);
             }
