@@ -6,11 +6,13 @@ mod engine;
 mod fcitx_dbus;
 mod font;
 mod fuzzy;
+mod ibus;
 mod im_state;
 mod keymap;
 mod popup;
 mod proto;
 mod render;
+mod session;
 mod shm;
 mod single_instance;
 mod ui_slint;
@@ -1732,6 +1734,9 @@ fn usage() {
     println!("  --dbus              以 fcitx5 DBus 前端运行（接管 org.fcitx.Fcitx5）");
     println!("                      用于微信/WPS/Electron/GNOME/X11 等自带 fcitx5-qt 的程序；");
     println!("                      与 fcitx5 及本程序的 Wayland 前端互斥，二者只能留一个");
+    println!("  --ibus              以 IBus 引擎运行（接管 org.freedesktop.IBus.Xime）");
+    println!("                      用于 GNOME：Mutter 不实现 zwp_input_method_v2，而 GTK4 /");
+    println!("                      Firefox / Chromium 只认 IBus；需要 ibus-daemon 在跑");
     println!("  --query 拼音        打印该拼音串的候选与解码代价（调参用）");
     println!("  --render-test PATH [拼音] [页码]  把候选窗渲染成 BMP（可用 --popup/--theme 预览各形态）");
     println!("  --ui-probe PATH [拼音] [scale] [页码]  用 Slint 软件渲染器画候选条写 BMP（可指定缩放/页码）");
@@ -1935,6 +1940,14 @@ fn main() {
     if args.iter().any(|a| a == "--dbus") {
         let verbose = args.iter().any(|a| a == "--verbose");
         if let Err(e) = fcitx_dbus::run(variant, verbose) {
+            eprintln!("xime: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--ibus") {
+        let verbose = args.iter().any(|a| a == "--verbose");
+        if let Err(e) = ibus::run(variant, verbose) {
             eprintln!("xime: {e}");
             std::process::exit(1);
         }

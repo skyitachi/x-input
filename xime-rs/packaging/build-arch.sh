@@ -41,7 +41,7 @@ OUT="$OUTDIR/xime-$VERSION-1-$ARCH.pkg.tar.$EXT"
 
 mkdir -p "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" \
          "$STAGE/usr/share/applications" "$STAGE/etc/xdg/autostart" \
-         "$STAGE/usr/lib/systemd/user" "$OUTDIR"
+         "$STAGE/usr/lib/systemd/user" "$STAGE/usr/share/ibus/component" "$OUTDIR"
 
 install -m 755 "$BIN" "$STAGE/usr/bin/xime"
 install -m 755 packaging/xime-both "$STAGE/usr/bin/xime-both"
@@ -57,6 +57,8 @@ install -m 644 packaging/xime.desktop "$STAGE/usr/share/applications/xime.deskto
 install -m 644 packaging/xime-autostart.desktop "$STAGE/etc/xdg/autostart/xime.desktop"
 # 与 fcitx5 同款生命周期管理（Omarchy 上 fcitx5 就是 systemd 用户单元）
 install -m 644 packaging/xime.service "$STAGE/usr/lib/systemd/user/xime.service"
+# GNOME「设置 → 键盘 → 输入源」靠这个 IBus component 发现「xime 拼音」
+install -m 644 packaging/xime-ibus.xml "$STAGE/usr/share/ibus/component/xime.xml"
 install -m 644 packaging/xime.install "$STAGE/.INSTALL"
 
 SIZE=$(du -sk "$STAGE/usr" | cut -f1)

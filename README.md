@@ -9,7 +9,8 @@
 输入法是 `zwp_input_method_v2` 协议的**一端**，应用是 `zwp_text_input_v3` 的**另一端**，
 两者从不直接对话，全部由合成器（KWin / wlroots）转接。所以不需要往任何进程里注入东西，
 单包零配置、零环境变量就能工作。覆盖面的边界：合成器不实现输入法协议（GNOME/Mutter）时
-原生前端不可用；应用在 XWayland 上时走内置的 fcitx5-DBus 前端（`xime-both`），
+原生前端不可用，GNOME 改走内置的 IBus 前端（`xime --ibus`，Mutter 只认 IBus）；
+应用在 XWayland 上时走内置的 fcitx5-DBus 前端（`xime-both`），
 需搭配推荐安装的 fcitx5 客户端模块（qt/gtk）。
 
 详细机制见 [`docs/xime-key-flow.md`](docs/xime-key-flow.md)。
@@ -65,13 +66,16 @@ sudo apt install ./dist/xime_0.2.0_amd64.deb
 ## 能力边界（摘要）
 
 **合成器**：KWin（Plasma 5.26+ / 6.x，必须由 KWin 拉起）、wlroots 系（sway / Hyprland /
-labwc / river，`exec xime` 即可）✅；**GNOME/Mutter ❌**（不实现 `zwp_input_method_v2`）。
+labwc / river，`exec xime` 即可）✅；**GNOME/Mutter 走 `--ibus` 前端**（Mutter 不实现
+`zwp_input_method_v2`，但它实现了 IBus，装好 component XML 后「设置 → 键盘 → 输入源」
+里就能选到「xime 拼音」）。
 
 **应用**：GTK3 / GTK4、Qt5 / Qt6（Wayland 后端）、Chromium / Electron（Ozone Wayland）✅；
 XWayland / X11 程序 ❌；部分终端（alacritty 等自处理按键的）❌。
 
-`--dbus` 前端可补上 GNOME、X11/XWayland、微信 / WPS / Electron 这几块（代价：与 fcitx5
-互斥，且要求系统里有 `fcitx5-qt` / `fcitx5-gtk` 模块）。
+`--dbus` 前端可补上 X11/XWayland、微信 / WPS / Electron 这几块（代价：与 fcitx5
+互斥，且要求系统里有 `fcitx5-qt` / `fcitx5-gtk` 模块）；`--ibus` 前端补上 GNOME / X11
+（代价：候选窗由 gnome-shell 画，不是自绘）。
 
 本机四个常用应用（Chrome / Konsole / 微信 / WorkBuddy）× KDE 的实测结论见
 [`docs/xime-app-matrix.md`](docs/xime-app-matrix.md)。

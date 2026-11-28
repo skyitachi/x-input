@@ -58,15 +58,16 @@ qt/gtk 客户端模块、不拉 fcitx5 守护进程，缺省时 `xime-setup --au
 ## 二、能力边界
 
 中英两种输入走的是同一条 Wayland 输入法链路，切换只改输入法内部状态，
-所以下表对两种模式都成立。协议有两套前端：wlroots 系用 `zwp_input_method_v2`，
-KWin 用 `zwp_input_method_v1`（`--frontend auto` 自动识别），引擎与候选窗完全共用。
+所以下表对两种模式都成立。协议上有**三个前端**，共用同一个引擎与按键状态机：
+wlroots 系用 `zwp_input_method_v2`，KWin 用 `zwp_input_method_v1`（`--frontend auto`
+自动识别），GNOME 走 IBus（`--ibus`）。
 
 | 合成器 | 支持 | 说明 |
 |---|---|---|
 | KDE Plasma (KWin) | ✅ | 走 `zwp_input_method_v1`；必须由 KWin 拉起（写 `kwinrc` 的 `InputMethod`，值必须是 `.desktop`）；`xime-setup` 自动接线 |
 | sway / Hyprland / labwc | ✅ | 直接作为普通客户端运行（`zwp_input_method_v2`） |
+| GNOME (Mutter) | ✅ | 用 `--ibus` 前端。Mutter 没实现 `zwp_input_method_v2`，但它实现了 IBus 这条完全不同的路，见「第三条路」 |
 | GTK3 / GTK4 / Qt / Electron 应用 | ✅ | 走 `zwp_text_input_v3`；设了 `QT_IM_MODULE`/`GTK_IM_MODULE` 的 X11/XWayland 应用改由 DBus 前端接（见下） |
-| GNOME (Mutter) | ❌ | Mutter 没实现 `zwp_input_method_v2`，任何非框架输入法都不可用 |
 | XWayland 应用 / xterm | ❌ | 不在协议覆盖范围内（要用只能走 XIM，那是框架的路子；KDE 上同理，KWin 只为 wl_surface 建上下文） |
 
 ### 环境变量：`QT_IM_MODULE=fcitx` 不再需要清掉
@@ -165,7 +166,7 @@ python3 tools/uinput-send.py text:nihao sleep:1.2 shot:/tmp/preedit.png space en
 
 ### 第二条路：DBus 前端（`xime --dbus`），与第一条路同时跑
 
-上面表格里打 ❌ 的几种情况——GNOME、X11/XWayland、以及只认 fcitx 的程序
+上面表格里打 ❌ 的几种情况——X11/XWayland、以及只认 fcitx 的程序
 （微信、WPS、Electron）——由 `--dbus` 前端覆盖。它根本不碰 Wayland 协议，
 而是抢下 fcitx5 的服务名 `org.fcitx.Fcitx5`，让程序**内置的** fcitx5-qt /
 fcitx5-gtk 客户端连上来：
@@ -181,19 +182,20 @@ Wayland 前端在后台语义上前台运行，DBus 前端作为它的兄弟进�
 Wayland 前端自己崩了也**不**杀 DBus 那半边（X11 应用还要用）。fcitx5 在跑时自动跳过
 DBus 前端，避免抢服务名。
 
-| 场景 | Wayland 前端 | `--dbus` 前端 |
-|---|---|---|
-| Hyprland / sway / KDE | ✅ | ✅ |
-| GNOME Wayland | ❌ Mutter 无该协议 | ✅ GTK / Qt 应用可用 |
-| X11 会话 / XWayland 应用 | ❌ | ✅ |
-| 微信 / WPS / Electron | ❌ | ✅ **已实测** |
+| 场景 | Wayland 前端 | `--dbus` 前端 | `--ibus` 前端 |
+|---|---|---|---|
+| Hyprland / sway / KDE | ✅ | ✅ | ✅（IBus 也能跑） |
+| GNOME Wayland | ❌ Mutter 无该协议 | ⚠️ 只在应用带 fcitx5-qt/gtk 模块时可用 | ✅ **唯一可用的路** |
+| X11 会话 / XWayland 应用 | ❌ | ✅ | ✅ |
+| 微信 / WPS / Electron | ❌ | ✅ **已实测** | ✅ |
 
 KDE 那格的「Wayland 前端 ✅」指的是 `zwp_input_method_v1`：xime 已实现这个前端，
 由 KWin 拉起、`--frontend auto` 自动识别，Wayland 应用全功能可用；但 KWin 只为
 `wl_surface` 建输入法上下文，**XWayland 应用（微信/WPS）仍然只能用 `--dbus`**。
 
-两条路**不再互斥**：应用在启动时自己选一条，xime 两个前端各接一半。
+三条路**不再互斥**：应用在启动时自己选一条，xime 各前端分别接住自己那一半。
 唯一不能做的是「同一个应用同时走两条」——那是 Qt/GTK 启动时单选决定的。
+GNOME 上通常只跑 `--ibus`（GNOME 的客户端只认 IBus，另外两条去不了那儿）。
 
 这条路有个意外的好处：候选窗**由应用自己画**（Qt 与 GTK 客户端都声明
 `ClientSideInputPanel`，bit 39；实测 Qt 的能力位是 `0xe000800072`、
@@ -230,7 +232,51 @@ systemd-run --user --unit=xime-dbus --collect -p Restart=always \
 systemctl --user stop xime-dbus && systemctl --user start omarchy-fcitx5   # 切回
 ```
 
+### 第三条路：IBus 前端（`xime --ibus`），给 GNOME 用
+
+GNOME 是唯一一个「既有输入法框架、又不肯实现 `zwp_input_method_v2`」的桌面：
+Mutter 到 51 仍然没有这个协议（wayland.app 的合成器表里它是 `x`，连 KWin 都实现了
+的 v1 它都没有）。而 GTK4 应用、Firefox / Chromium / Electron 的 Wayland 模式
+**完全无视 `GTK_IM_MODULE`**，只走 `text-input-v3` → mutter → IBus。所以这两条路
+在 GNOME 上都到不了 xime，只能在 IBus 这一层接。
+
+`xime --ibus` 就是让 xime 直接变成一个 IBus 引擎：
+
+```sh
+xime --ibus             # 由 ibus-daemon 按需拉起，一般不用手动跑
+xime --ibus --verbose   # 排握手问题时用
+```
+
+它做四件事，和官方 `ibus-engine-simple` 完全一致：连上 ibus-daemon 的总线、
+申请同名总线名、在 `/org/freedesktop/IBus/Factory` 提供 `CreateEngine`、
+把每个输入上下文的引擎对象挂在 `/org/freedesktop/IBus/Engine/<n>` 上。
+装包时附带 `packaging/xime-ibus.xml`（装到 `/usr/share/ibus/component/xime.xml`），
+ibus-daemon 读它之后「设置 → 键盘 → 输入源」里就会出现「xime 拼音」。
+
+> ⚠️ **最容易踩的坑：ibus-daemon 默认不开在会话总线上。**
+>
+> 它自建一个私有 D-Bus 服务（如 `unix:path=/run/user/1000/ibus/dbus-XXXX`），把地址
+> 写进 `~/.config/ibus/bus/<machine-id>-unix-<display>`（文件里是 `IBUS_ADDRESS=...`）。
+> 客户端和引擎都必须按 libibus 的规则去解析这个地址。**直接连
+> `DBUS_SESSION_BUS_ADDRESS` 会连到另一条总线**，daemon 永远看不到引擎，表现为
+> `ibus engine xime` 卡 15 秒后报 `Set global engine failed: Timeout was reached`，
+> 而引擎进程自己还活得好好的——这个现象非常容易误判成协议写错。
+> `--ibus` 的地址解析顺序与 libibus 一致：`$IBUS_ADDRESS` →
+> `$IBUS_ADDRESS_FILE` → `~/.config/ibus/bus/<machine-id>-unix-<display>` →
+> 扫该目录取 daemon 还活着且最新的那个。
+
+功能上与另外两个前端的唯一让步是**候选窗交给 gnome-shell 画**：GNOME 不支持
+`wlr-layer-shell`，自绘浮窗没有可靠落点，所以候选表通过 `UpdateLookupTable` 信号
+交给 IBus 面板，翻页、选词、预编辑都走标准接口。
+
+```sh
+ibus engine xime                 # 切到 xime
+ibus engine                      # 看当前引擎
+ibus list-engine | grep -A2 中文  # 看 xime 有没有被注册上
+```
+
 ---
+
 
 ## 三、架构
 
@@ -249,6 +295,9 @@ src/
 ├── popup.rs    候选条布局与配色
 ├── en.rs       英文前缀补全：字母序二分 + 词频排序
 ├── zh.rs       简繁转换：单字映射 + 词级例外 + 词条可见性
+├── session.rs  三个前端共用的按键状态机（中英状态、组字串、翻页、共享状态文件）
+├── fcitx_dbus.rs  DBus 前端：冒充 fcitx5 守护进程（`--dbus`）
+├── ibus.rs     IBus 前端：Factory/Engine 对象 + IBUS_ADDRESS 解析（`--ibus`）
 └── shm.rs      memfd + mmap 提供 wl_shm 像素内存
 data/
 ├── dict.bin    33.3 万词条（9.9MB）
@@ -514,7 +563,11 @@ Wayland 没有输入法注册表，所以不存在一个跨桌面通用的「输
 |---|---|---|
 | KDE Plasma (KWin) | 能：**系统设置 → 键盘 → 虚拟键盘** | 包内桌面条目（`X-KDE-Wayland-VirtualKeyboard=true`）+ kwinrc 的 `[Wayland] InputMethod` |
 | Hyprland / sway / labwc | 没有这个概念 | 写进会话启动项；谁绑上 `zwp_input_method_v2` 席位谁是输入法 |
-| GNOME (Mutter) | 有列表，但只列 IBus 引擎 | 用不了：Mutter 没实现该协议 |
+| GNOME (Mutter) | 能：**设置 → 键盘 → 输入源 → 中文**，列表里是「xime 拼音」 | 装 `packaging/xime-ibus.xml` 到 `/usr/share/ibus/component/xime.xml`，ibus-daemon 按需 exec `xime --ibus` |
+
+GNOME 的列表是**按 IBus component XML 发现**的：`/usr/share/ibus/component/*.xml` 里
+每个 `<engine>` 就是「输入源」里的一个条目，`<component><name>` 同时是引擎进程要申请的
+总线名（必须和 `src/ibus.rs` 的 `BUS_NAME` 逐字一致）。
 
 KDE 的列表是**按桌面条目发现**的：`/usr/share/applications` 下带
 `X-KDE-Wayland-VirtualKeyboard=true` 的条目才会出现（fcitx5、plasma-keyboard 都靠这一行

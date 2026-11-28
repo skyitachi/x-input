@@ -30,6 +30,7 @@ OUT="$OUTDIR/xime_${VERSION}_${ARCH}.deb"
 
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/doc/xime" \
          "$STAGE/usr/share/applications" "$STAGE/etc/xdg/autostart" \
+         "$STAGE/usr/share/ibus/component" \
          "$STAGE/usr/lib/systemd/user" "$OUTDIR"
 
 install -m 755 "$BIN" "$STAGE/usr/bin/xime"
@@ -47,6 +48,8 @@ install -m 644 packaging/xime.desktop "$STAGE/usr/share/applications/xime.deskto
 install -m 644 packaging/xime-autostart.desktop "$STAGE/etc/xdg/autostart/xime.desktop"
 # 与 fcitx5 同款生命周期管理（Omarchy 上 fcitx5 就是 systemd 用户单元）
 install -m 644 packaging/xime.service "$STAGE/usr/lib/systemd/user/xime.service"
+# IBus 组件：GNOME 靠它发现 xime 引擎（Mutter 没有 zwp_input_method_v2）
+install -m 644 packaging/xime-ibus.xml "$STAGE/usr/share/ibus/component/xime.xml"
 install -m 644 packaging/postinst "$STAGE/DEBIAN/postinst"
 install -m 644 packaging/prerm "$STAGE/DEBIAN/prerm"
 install -m 644 packaging/postrm "$STAGE/DEBIAN/postrm"

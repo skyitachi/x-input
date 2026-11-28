@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- filename: xime-ibus.xml
+
+     IBus 组件定义。装到 /usr/share/ibus/component/ 后，ibus-daemon 启动时会读它，
+     在「设置 → 键盘 → 输入源」里出现「xime 拼音」。
+
+     两处名字必须和 src/ibus.rs 里的常量逐字对应，否则引擎起得来但连不上：
+     - <component><name>  = BUS_NAME（引擎进程申请的总线名）
+     - <engines><engine><name> = ENGINE_NAME（CreateEngine 的参数）
+-->
+<component>
+    <name>org.freedesktop.IBus.Xime</name>
+    <description>xime 拼音（IBus 前端）</description>
+    <exec>/usr/bin/xime --ibus</exec>
+    <version>0.3.0</version>
+    <author>xime &lt;xime@localhost&gt;</author>
+    <license>MIT</license>
+    <homepage>https://github.com/skyitachi/xime</homepage>
+    <textdomain>xime</textdomain>
+    <engines>
+        <engine>
+            <name>xime</name>
+            <longname>xime 拼音</longname>
+            <language>zh_CN</language>
+            <license>MIT</license>
+            <author>xime &lt;xime@localhost&gt;</author>
+            <!-- 输入法沿用 us 布局，拼音串由引擎自己解析，不依赖 XKB 的中文布局 -->
+            <layout>us</layout>
+            <description>xime 拼音输入法（IBus 前端，供 GNOME 使用）</description>
+            <rank>10</rank>
+        </engine>
+    </engines>
+</component>
