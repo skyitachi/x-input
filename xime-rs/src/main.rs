@@ -26,7 +26,10 @@ use render::Canvas;
 use shm::Shm;
 use wire::{Conn, Incoming, DISPLAY_ID};
 
-const VERSION: &str = "0.3.0";
+// 版本号只有一个来源：Cargo.toml。scripts/bump-version.sh 每次构建前把它
+// 的 patch 位 +1，编译期由 cargo 注入，所以 --version、deb 包名、Arch pkgver
+// 三者永远一致，不会再出现常量写死后忘改的情况。
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SHM_FORMAT_ARGB8888: u32 = 0;
 const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 const KEY_PRESSED: u32 = 1;

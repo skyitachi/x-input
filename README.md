@@ -52,8 +52,9 @@
 
 ```sh
 cd xime-rs
-./build.sh                                  # 生成数据 → 静态编译 → 单测 → 打包 deb + Arch pkg
-sudo apt install ./dist/xime_0.3.0_amd64.deb   # 或 sudo pacman -U dist/xime-0.3.0-1-x86_64.pkg.tar.zst
+./build.sh                                  # 版本号 +1 → 生成数据 → 编译 → 单测 → 打包
+VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)   # 本次构建的版本号
+sudo apt install "./dist/xime_${VER}_amd64.deb"         # 或 sudo pacman -U "dist/xime-${VER}-1-x86_64.pkg.tar.zst"
 xime-setup --status                         # 看接线结果
 ```
 

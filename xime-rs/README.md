@@ -537,17 +537,24 @@ fontconfig 等库；不再需要 musl target。重新生成数据（`scripts/gen
 
 ```sh
 ./build.sh
-#  1/4 数据（复用 data/*.bin，缺失时调用 ../wayland-ime/tools 生成；
+#  1/5 版本号（Cargo.toml 的 patch 位 +1，如 0.3.0 -> 0.3.1）
+#  2/5 数据（复用 data/*.bin，缺失时调用 ../wayland-ime/tools 生成；
 #      简繁表由 scripts/gen-zh.py 用 OpenCC 预生成，并顺带导出繁体字符集给字体烘焙）
-#  2/4 宿主编译（gnu 动态链接；Slint 候选窗需 fontconfig）
-#  3/4 单元测试
-#  4/4 打包 → dist/xime_0.3.0_amd64.deb + dist/xime-0.3.0-1-x86_64.pkg.tar.zst
+#  3/5 宿主编译（gnu 动态链接；Slint 候选窗需 fontconfig）
+#  4/5 单元测试
+#  5/5 打包 → dist/xime_<ver>_amd64.deb + dist/xime-<ver>-1-x86_64.pkg.tar.zst
+
+# 每次构建版本号都会 +1（scripts/bump-version.sh 改 Cargo.toml，编译期由
+# env!("CARGO_PKG_VERSION") 注入二进制），dist/ 里因此会累积多个包。装最新的那个：
+VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
 
 # Debian/Ubuntu 系：
-sudo apt install ./dist/xime_0.3.0_amd64.deb
+sudo apt install "./dist/xime_${VER}_amd64.deb"
 
 # Arch 系（Arch/CachyOS/Omarchy 等）：
-sudo pacman -U dist/xime-0.3.0-1-x86_64.pkg.tar.zst
+sudo pacman -U "dist/xime-${VER}-1-x86_64.pkg.tar.zst"
+
+# 只改了打包脚本、想重打同一版本（不涨号）：./build.sh --no-bump
 
 # 两种包文件布局一致、零依赖；安装/卸载钩子等价。包里带了三样接线材料：
 #   /usr/share/applications/xime.desktop   KDE 系统设置里的「虚拟键盘」条目
