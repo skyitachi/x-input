@@ -631,6 +631,29 @@ xime-setup --bind        # 给切换绑个快捷键（默认 CTRL + ALT + SPACE�
 都没有才落到 exec-once / `o.launch_on_start("xime")` 这类会话启动项。任何时候
 `xime-setup --status` 都能看到当前跑着谁、哪些单元处于 enabled。
 
+### deepin / X11 会话（xime-compat）
+
+`xime.service` 带 `ConditionEnvironment=WAYLAND_DISPLAY`。deepin 虚拟机、
+lightdm + startdde 这类 X11 会话没有这个变量，systemd 会直接跳过单元；而
+`xime-switch` 只看 `systemctl start` 的返回码，于是打印「xime 已启动」，
+`pgrep -x xime` 却为空，末尾显示「当前: none」。
+
+`xime-compat` 专门补这一层（幂等，可重复执行）：
+
+```sh
+xime-compat                  # 启动：写 systemd drop-in、停 fcitx5、拉起 xime
+xime-compat status           # 看会话类型、进程、org.fcitx.Fcitx5 归属、IM 变量
+xime-compat env              # 只写 environment.d + ~/.xprofile
+xime-compat stop             # 停止 xime（不自动恢复 fcitx5）
+```
+
+X11 下它会清掉 `WAYLAND_DISPLAY` 条件，让 `xime-both` 按会话只起 DBus 前端；
+同时把 `QT_IM_MODULE` / `GTK_IM_MODULE` / `XMODIFIERS` 写进
+`~/.config/environment.d/99-xime-im.conf` 和 `~/.xprofile`，覆盖 systemd 与
+DDE/lightdm 两条继承链。环境变量登录时读取，改完注销重登最稳；临时验证可用
+`QT_IM_MODULE=fcitx5 应用名`。X11 应用还依赖 `fcitx5-frontend-all`
+（包的 `Recommends`），缺了运行 `sudo apt install fcitx5-frontend-all`。
+
 ### 调试与自检
 
 ```sh

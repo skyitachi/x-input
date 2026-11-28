@@ -1,0 +1,348 @@
+#!/bin/sh
+# xime-compat - deepin / X11 会话兼容层。
+#
+# 为什么需要它：
+#   xime.service 带 `ConditionEnvironment=WAYLAND_DISPLAY`。deepin 虚拟机、
+#   lightdm + startdde 这类 X11 会话没有这个变量，systemd 会把整个单元跳过；
+#   而 xime-switch 只检查 `systemctl start` 的返回码，于是打印「xime 已启动」，
+#   实际 `pgrep -x xime` 为空，末尾显示「当前: none」。
+#
+# 本脚本做三件事（全部幂等）：
+#   1. X11 会话下给 xime.service 写 drop-in，清掉 WAYLAND_DISPLAY 条件；
+#      xime-both 自己会按会话判断，X11 只起 DBus 前端，不会碰 Wayland 协议。
+#   2. 停掉 fcitx5（含 Restart=always 的 systemd 单元），再拉起 xime。
+#   3. 写 Qt/GTK/X11 需要的 IM 变量：environment.d 给 systemd 用户会话，
+#      ~/.xprofile 给 DDE/lightdm 启动的应用。两者都写，覆盖两种继承链。
+#
+# 用法：
+#   xime-compat                 启动（默认）
+#   xime-compat status          诊断：会话类型、进程、服务名、IM 变量
+#   xime-compat env             只写 IM 环境变量，不启动
+#   xime-compat stop            停止 xime（不自动恢复 fcitx5）
+#   xime-compat --no-env        启动但不写环境变量文件
+#   xime-compat --no-xprofile   启动但不改 ~/.xprofile
+#
+# 环境变量：
+#   XIME_BOTH_BIN=/path/to/xime-both   指定启动器
+#   XIME_COMPAT_NO_ENV=1               等价于 --no-env
+#   XIME_COMPAT_NO_XPROFILE=1          等价于 --no-xprofile
+#
+# 注意：environment.d 与 ~/.xprofile 都是登录时读取的。写完之后已经开着的
+# 应用不会自动继承，注销重登最稳；只想临时验证可以用
+#   QT_IM_MODULE=fcitx5 GTK_IM_MODULE=fcitx5 应用名
+set -eu
+
+XIME_BOTH=${XIME_BOTH_BIN:-}
+if [ -z "$XIME_BOTH" ]; then
+    for _b in /usr/bin/xime-both /usr/local/bin/xime-both "${HOME}/.local/bin/xime-both"; do
+        [ -x "$_b" ] && { XIME_BOTH=$_b; break; }
+    done
+fi
+
+STATE_DIR=${XDG_STATE_HOME:-${HOME}/.local/state}
+LOG="$STATE_DIR/xime-compat.log"
+CONFIG_HOME=${XDG_CONFIG_HOME:-${HOME}/.config}
+UNIT_DIR="$CONFIG_HOME/systemd/user"
+ENV_DIR="$CONFIG_HOME/environment.d"
+ENV_FILE="$ENV_DIR/99-xime-im.conf"
+XPROFILE=${XPROFILE:-${HOME}/.xprofile}
+DROPIN="$UNIT_DIR/xime.service.d/50-xime-compat.conf"
+
+no_env=${XIME_COMPAT_NO_ENV:-0}
+no_xprofile=${XIME_COMPAT_NO_XPROFILE:-0}
+
+say() { printf '%s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+running() { pgrep -x "$1" >/dev/null 2>&1; }
+
+session_type() {
+    case "${XDG_SESSION_TYPE:-}" in
+        wayland|Wayland) printf 'wayland\n'; return 0 ;;
+        x11|X11)         printf 'x11\n'; return 0 ;;
+    esac
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        printf 'wayland\n'
+    elif [ -n "${DISPLAY:-}" ]; then
+        printf 'x11\n'
+    else
+        printf 'unknown\n'
+    fi
+}
+
+systemd_ready() {
+    have systemctl || return 1
+    [ -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd" ]
+}
+
+unit_installed() {
+    [ -f "/usr/lib/systemd/user/$1" ] || [ -f "$UNIT_DIR/$1" ]
+}
+
+# X11 的 systemd 单元会被 WAYLAND_DISPLAY 条件整段跳过。
+# 空赋值是 systemd 的「清空条件列表」写法，不会影响其他 Condition。
+ensure_service_override() {
+    [ "$(session_type)" = x11 ] || return 0
+    mkdir -p "$(dirname "$DROPIN")"
+    cat >"$DROPIN" <<'EOF'
+# 由 xime-compat 写入：X11 会话没有 WAYLAND_DISPLAY，原单元会整段跳过。
+# 清空条件即可；xime-both 会按会话自动只起 DBus 前端。
+[Unit]
+ConditionEnvironment=
+EOF
+    systemd_ready && systemctl --user daemon-reload 2>/dev/null || true
+    say "  已写入 $DROPIN"
+}
+
+stop_fcitx5() {
+    if systemd_ready; then
+        for _u in omarchy-fcitx5.service fcitx5.service; do
+            if unit_installed "$_u"; then
+                systemctl --user disable --quiet "$_u" 2>/dev/null || true
+                systemctl --user stop --quiet "$_u" 2>/dev/null || true
+                say "  已停止并停用 $_u"
+            fi
+        done
+    fi
+    if running fcitx5; then
+        pkill -x fcitx5 || true
+        say "  fcitx5 进程已终止"
+    fi
+}
+
+wait_for_xime() {
+    _i=0
+    while [ "$_i" -lt 25 ]; do
+        running xime && return 0
+        _i=$((_i + 1))
+        sleep 0.2
+    done
+    return 1
+}
+
+# xime-both 在 X11 会自动只起 DBus 前端；显式传 --dbus-only 更稳。
+# 如果只有裸 xime 二进制（源码安装），参数要换成 --dbus。
+start_xime() {
+    _mode=$(session_type)
+    case "$XIME_BOTH" in
+        *xime-both)
+            case "$_mode" in
+                wayland) _args="" ;;
+                *)       _args="--dbus-only" ;;
+            esac
+            ;;
+        *)
+            _args="--dbus"
+            ;;
+    esac
+
+    ensure_service_override
+
+    _started=0
+    if systemd_ready && unit_installed xime.service; then
+        systemctl --user enable --quiet xime.service 2>/dev/null || true
+        systemctl --user restart --quiet xime.service 2>/dev/null || true
+        if wait_for_xime; then
+            _started=1
+            say "  xime 已由 systemd 拉起（会话: $_mode）"
+        fi
+    fi
+
+    if [ "$_started" -eq 0 ]; then
+        [ -n "$XIME_BOTH" ] || {
+            say "  找不到 xime-both，也没有可用的 xime 启动器" >&2
+            return 1
+        }
+        mkdir -p "$STATE_DIR"
+        say "  systemd 未拉起 xime，改用启动器直接启动（会话: $_mode）"
+        if have setsid; then
+            # shellcheck disable=SC2086
+            setsid -f "$XIME_BOTH" $_args >>"$LOG" 2>&1 || true
+        else
+            # shellcheck disable=SC2086
+            nohup "$XIME_BOTH" $_args >>"$LOG" 2>&1 &
+        fi
+        if wait_for_xime; then
+            _started=1
+        fi
+    fi
+
+    if [ "$_started" -eq 1 ]; then
+        say "  xime 运行中 ✅"
+    else
+        say "  ⚠ xime 仍未运行" >&2
+        say "    日志: $LOG" >&2
+        say "          ${XDG_STATE_HOME:-${HOME}/.local/state}/xime-dbus.log" >&2
+        return 1
+    fi
+}
+
+append_xprofile_block() {
+    _marker="# >>> xime-compat >>>"
+    if [ -f "$XPROFILE" ] && grep -Fq "$_marker" "$XPROFILE"; then
+        say "  $XPROFILE 已有 xime-compat 配置"
+        return 0
+    fi
+    if [ -f "$XPROFILE" ]; then
+        cp -p "$XPROFILE" "$XPROFILE.xime-compat.bak" 2>/dev/null || true
+        printf '\n' >>"$XPROFILE"
+        say "  已备份 $XPROFILE → $XPROFILE.xime-compat.bak"
+    fi
+    cat >>"$XPROFILE" <<'EOF'
+# >>> xime-compat >>>
+# X11/XWayland 应用通过 fcitx5 客户端模块连接 xime 的 DBus 前端。
+# 值写 fcitx 也可以：插件按服务名 org.fcitx.Fcitx5 选协议，不看这个值。
+export QT_IM_MODULE=fcitx5
+export GTK_IM_MODULE=fcitx5
+export XMODIFIERS=@im=fcitx
+# <<< xime-compat <<<
+EOF
+    say "  已写入 $XPROFILE"
+}
+
+prepare_env() {
+    [ "$no_env" = 1 ] && return 0
+    mkdir -p "$ENV_DIR"
+    cat >"$ENV_FILE" <<'EOF'
+# xime-compat: X11/XWayland 应用需要 IM 变量才会加载 fcitx5-qt/gtk，
+# 再由这些客户端连到 xime 的 DBus 前端（org.fcitx.Fcitx5）。
+QT_IM_MODULE=fcitx5
+GTK_IM_MODULE=fcitx5
+XMODIFIERS=@im=fcitx
+EOF
+    say "  已写入 $ENV_FILE"
+    if [ "$(session_type)" = x11 ] && [ "$no_xprofile" = 0 ]; then
+        append_xprofile_block
+    fi
+    say "  提示：环境变量在下次登录生效；当前应用可重开，或整机注销重登"
+}
+
+frontend_modules_installed() {
+    [ -e /usr/lib/x86_64-linux-gnu/qt6/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so ] \
+        || [ -e /usr/lib/x86_64-linux-gnu/qt5/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so ] \
+        || [ -e /usr/lib/x86_64-linux-gnu/gtk-3.0/3.0.0/immodules/im-fcitx5.so ] \
+        || [ -e /usr/lib/x86_64-linux-gnu/gtk-4.0/4.0.0/immodules/im-fcitx5.so ] \
+        || find /usr/lib -maxdepth 7 \( -name 'libfcitx5platforminputcontextplugin.so' \
+               -o -name 'im-fcitx5.so' \) -print -quit 2>/dev/null | grep -q .
+}
+
+show_status() {
+    say "会话类型: $(session_type)"
+    say "  XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-<未设置>}"
+    say "  WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<空>}"
+    say "  DISPLAY=${DISPLAY:-<空>}"
+    say "  桌面=${XDG_CURRENT_DESKTOP:-${XDG_SESSION_DESKTOP:-<未知>}}"
+    say "启动器: ${XIME_BOTH:-<未找到>}"
+
+    if systemd_ready && unit_installed xime.service; then
+        say "xime.service: active=$(systemctl --user is-active xime.service 2>/dev/null || echo unknown) enabled=$(systemctl --user is-enabled xime.service 2>/dev/null || echo unknown)"
+    else
+        say "xime.service: 未安装或用户 systemd 不可用"
+    fi
+
+    say "进程:"
+    if pgrep -a -x xime >/dev/null 2>&1; then
+        pgrep -a -x xime | sed 's/^/  /'
+    else
+        say "  xime: 未运行"
+    fi
+    if pgrep -a -x xime-both >/dev/null 2>&1; then
+        pgrep -a -x xime-both | sed 's/^/  /'
+    else
+        say "  xime-both: 未运行"
+    fi
+    running fcitx5 && say "  fcitx5: 运行中（会占用 org.fcitx.Fcitx5）" || say "  fcitx5: 未运行"
+
+    if have busctl; then
+        _owner=$(busctl --user list 2>/dev/null |
+            awk '$1 == "org.fcitx.Fcitx5" && $2 != "-" { print $3 "（PID " $2 "）"; exit }')
+        say "org.fcitx.Fcitx5: ${_owner:-无人持有}"
+    fi
+
+    say "当前 shell 的 IM 变量:"
+    say "  QT_IM_MODULE=${QT_IM_MODULE:-<未设置>}"
+    say "  GTK_IM_MODULE=${GTK_IM_MODULE:-<未设置>}"
+    say "  XMODIFIERS=${XMODIFIERS:-<未设置>}"
+
+    [ -f "$ENV_FILE" ] && say "环境文件: 已存在 $ENV_FILE" || say "环境文件: 缺失（运行 xime-compat env）"
+    if [ -f "$XPROFILE" ] && grep -Fq '# >>> xime-compat >>>' "$XPROFILE"; then
+        say "xprofile: 已写入 $XPROFILE"
+    else
+        say "xprofile: 未写入 $XPROFILE"
+    fi
+
+    if frontend_modules_installed; then
+        say "fcitx5 客户端模块: 已安装（X11/XWayland 应用可走 DBus 前端）"
+    else
+        say "fcitx5 客户端模块: 未检测到（X11 应用会退回 XIM/无中文）"
+        say "  安装: sudo apt install fcitx5-frontend-all"
+    fi
+}
+
+stop_xime() {
+    if systemd_ready && unit_installed xime.service; then
+        systemctl --user stop --quiet xime.service 2>/dev/null || true
+        say "  xime.service 已停止"
+    fi
+    for _p in $(pgrep -x xime-both 2>/dev/null || true); do
+        kill "$_p" 2>/dev/null || true
+    done
+    if running xime; then
+        pkill -x xime || true
+        say "  xime 进程已终止"
+    fi
+    say "  要用回 fcitx5: xime-switch fcitx5"
+}
+
+usage() {
+    cat <<EOF
+用法: xime-compat [start|status|env|stop] [选项]
+
+  start      启动 xime（默认）
+  status     显示会话类型、进程、服务名与 IM 变量
+  env        只写 IM 环境变量（environment.d + ~/.xprofile）
+  stop       停止 xime
+
+选项:
+  --no-env       不写 environment.d
+  --no-xprofile  不改 ~/.xprofile
+  -h, --help     显示本帮助
+
+示例:
+  xime-compat                 # deepin/X11 下一条命令启动
+  xime-compat status          # 启动后复查
+  QT_IM_MODULE=fcitx5 app     # 临时验证，不必注销
+EOF
+}
+
+cmd=start
+while [ $# -gt 0 ]; do
+    case "$1" in
+        start|--start) cmd=start ;;
+        status|--status) cmd=status ;;
+        env|--env) cmd=env ;;
+        stop|--stop) cmd=stop ;;
+        --no-env) no_env=1 ;;
+        --no-xprofile) no_xprofile=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) say "未知参数: $1" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+case "$cmd" in
+    start)
+        say "== 启动 xime（会话: $(session_type)）=="
+        prepare_env
+        stop_fcitx5
+        start_xime
+        ;;
+    env)
+        prepare_env
+        ;;
+    status)
+        show_status
+        ;;
+    stop)
+        stop_xime
+        ;;
+esac
